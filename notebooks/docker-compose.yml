@@ -1,0 +1,11 @@
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    ports:
+      - "3000:3000"
+      - "6379:6379"
+    volumes:
+      - grawiki_data:/data
+
+volumes:
+  grawiki_data:

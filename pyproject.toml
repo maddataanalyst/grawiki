@@ -1,0 +1,30 @@
+[project]
+name = "grawiki"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "chonkie>=1.6.2",
+    "pydantic-ai>=0.8.1",
+    "unstructured>=0.22.21",
+]
+
+[tool.ruff]
+target-version = "py313"
+
+[dependency-groups]
+dev = [
+    "autoroot>=1.0.1",
+    "pre-commit>=4.5.1",
+    "pytest>=9.0.3",
+    "ruff>=0.15.11",
+]
+falkordb = [
+    "falkordblite>=0.9.0",
+]
+research = [
+    "autoroot>=1.0.1",
+    "autorootcwd>=1.0.1",
+    "ipykernel>=7.2.0",
+]
