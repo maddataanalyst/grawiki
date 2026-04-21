@@ -2,6 +2,7 @@
 
 import datetime
 from typing import Literal
+import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,10 +30,16 @@ class Node(GraphModel):
         Machine-generated identifier unique within the graph.
     label : str
         Ontology type of the node, for example ``Person`` or ``Concept``.
+    semantic_key: str
+        A key constructed as the concatenation of node label and shortened name, used to identify nodes with the
+        same label and name across the graph. Should be very short and brief.
+        Example: person_alan-turing, code-snippet_llm-implementation.
     name : str
         Human-readable canonical name of the node instance.
     properties : dict[str, str], optional
         Short factual properties associated with the node.
+    embedding: list[float]
+        Optional vector embedding associated with the node, for example for retrieval purposes.
     """
 
     id: str = Field(
@@ -47,6 +54,13 @@ class Node(GraphModel):
             "'Organization', or 'Concept'."
         )
     )
+    semantic_key: str = Field(
+        description=(
+            "A key constructed as the concatenation of node label and shortened name, "
+            "used to identify nodes with the same label and name across the graph. "
+            "Should be very short and brief. Example: person_alan-turing, code-snippet_llm-implementation."
+        )
+    )
     name: str = Field(
         description=(
             "Human-readable canonical name of the specific node instance, "
@@ -57,6 +71,36 @@ class Node(GraphModel):
         default_factory=dict,
         description="Short factual properties associated with the node.",
     )
+    embedding: list[float] = Field(
+        default_factory=list,
+        description=(
+            "Optional vector embedding associated with the node, for example for retrieval purposes. "
+            "The specific embedding model and dimensions are determined by application code."
+        ),
+    )
+
+    @classmethod
+    def from_extracted_node(cls, extracted_node: "ExtractedNode") -> "Node":
+        """Create a graph node from an extracted node by assigning a machine identifier.
+
+        Parameters
+        ----------
+        extracted_node : ExtractedNode
+            Extracted node to convert.
+
+        Returns
+        -------
+        Node
+            Graph node with a machine-generated identifier.
+        """
+
+        return cls(
+            id=str(uuid.uuid4()),
+            label=extracted_node.label,
+            semantic_key=extracted_node.semantic_key,
+            name=extracted_node.name,
+            properties=dict(extracted_node.properties),
+        )
 
 
 class ExtractedNode(GraphModel):
@@ -69,6 +113,9 @@ class ExtractedNode(GraphModel):
     name : str
         Human-readable node name used as the temporary reference key within
         one extraction result.
+    semantic_key: str
+        A key constructed as the concatenation of node label and shortened name, used to identify nodes with the same label
+        and name across the graph. Should be very short and brief. Example: person_alan-turing, code-snippet_llm-implementation.
     properties : dict[str, str], optional
         Short factual properties associated with the node.
     """
@@ -85,6 +132,14 @@ class ExtractedNode(GraphModel):
             "within one extraction result."
         )
     )
+    semantic_key: str = Field(
+        description=(
+            "A key constructed as the concatenation of node label and shortened name, "
+            "used to identify nodes with the same label and name across the graph. "
+            "Should be very short and brief. Example: person_alan-turing, code-snippet_llm-implementation."
+        )
+    )
+
     properties: dict[str, str] = Field(
         default_factory=dict,
         description="Short factual properties associated with the node.",
@@ -104,6 +159,8 @@ class ChunkNode(Node):
         Identifier of the parent document.
     content : str
         Raw chunk text.
+    embedding: list[float], optional
+        Optional vector embedding associated with the chunk, for example for retrieval purposes.
     metadata : dict[str, str], optional
         Additional chunk metadata.
     """
@@ -113,6 +170,10 @@ class ChunkNode(Node):
         description="Identifier of the document this chunk belongs to."
     )
     content: str = Field(description="Raw text content of the chunk.")
+    embedding: list[float] = Field(
+        default_factory=list,
+        description="Optional vector embedding associated with the chunk, for example for retrieval purposes.",
+    )
     metadata: dict[str, str] = Field(
         default_factory=dict,
         description="Additional metadata associated with the chunk.",
@@ -138,6 +199,7 @@ class ChunkNode(Node):
         return cls(
             id=chunk.id,
             name=name or f"Chunk {chunk.id}",
+            semantic_key="chunk_" + chunk.id,
             document_id=chunk.document_id,
             content=chunk.content,
             metadata=dict(chunk.metadata),
@@ -155,12 +217,18 @@ class DocumentNode(Node):
         Human-readable document name, typically the document title.
     content : str
         Raw document text.
+    embedding: list[float], optional
+        Optional vector embedding associated with the document, for example for retrieval purposes.
     metadata : dict[str, str], optional
         Additional document metadata.
     """
 
     label: Literal["__document__"] = "__document__"
     content: str = Field(description="Raw text content of the document.")
+    embedding: list[float] = Field(
+        default_factory=list,
+        description="Optional vector embedding associated with the document, for example for retrieval purposes.",
+    )
     metadata: dict[str, str] = Field(
         default_factory=dict,
         description="Additional metadata associated with the document.",
@@ -184,6 +252,7 @@ class DocumentNode(Node):
         return cls(
             id=document.id,
             name=document.title,
+            semantic_key="document_" + document.id,
             content=document.content,
             metadata=dict(document.metadata),
         )
@@ -286,12 +355,6 @@ class ExtractedRelationship(GraphModel):
         default_factory=dict,
         description="Short factual properties associated with the relationship.",
     )
-
-
-class HasChunkRelationship(Relationship):
-    """Relationship linking a document node to one of its chunk nodes."""
-
-    label: Literal["has_chunk"] = "has_chunk"
 
 
 class KnowledgeGraph(GraphModel):

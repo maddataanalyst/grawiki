@@ -205,3 +205,11 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+
+# Databases
+*.db
+*.db-journal
+*.db.settings
+*.sqlite
+*.sqlite3

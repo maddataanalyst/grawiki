@@ -1,0 +1,244 @@
+"""Integration tests for the FalkorDB adapter."""
+
+import asyncio
+
+import pytest
+
+from src.grawiki.core.commons import Chunk
+from src.grawiki.db.falkordb import FalkorGraphDB
+from src.grawiki.graph.models import (
+    ChunkNode,
+    DocumentNode,
+    KnowledgeGraph,
+    Node,
+    Relationship,
+)
+
+
+@pytest.fixture
+def graph_db(tmp_path):
+    """Create an isolated FalkorDBLite-backed graph for each test."""
+
+    return FalkorGraphDB(
+        tmp_path / "graph.db",
+        "test_graph",
+        vector_index_m=32,
+        vector_index_ef_construction=200,
+        vector_index_ef_runtime=10,
+    )
+
+
+def _index_rows_by_key(rows: list[list[object]]) -> dict[tuple[str, str], list[object]]:
+    """Map FalkorDB index rows by ``(label, property)``."""
+
+    index_map: dict[tuple[str, str], list[object]] = {}
+    for row in rows:
+        label = row[0]
+        for property_name in row[2]:
+            index_map[(label, property_name)] = row
+    return index_map
+
+
+def test_save_documents_chunks_entities_and_relationships_with_indexes(
+    graph_db: FalkorGraphDB,
+) -> None:
+    """The adapter should persist nodes, embeddings, and indexes."""
+
+    document_node = DocumentNode(
+        id="doc_1",
+        label="__document__",
+        semantic_key="document_doc_1",
+        name="Graph Memory",
+        content="Graph databases support memory.",
+        metadata={"source": "unit-test"},
+        embedding=[1.0, 0.0, 0.0],
+    )
+    chunk_nodes = [
+        ChunkNode(
+            id="chunk_1",
+            label="__chunk__",
+            semantic_key="chunk_chunk_1",
+            name="Chunk chunk_1",
+            document_id="doc_1",
+            content="Alan Turing studied computability.",
+            metadata={"order": "1"},
+            embedding=[1.0, 0.0, 0.0],
+        ),
+        ChunkNode(
+            id="chunk_2",
+            label="__chunk__",
+            semantic_key="chunk_chunk_2",
+            name="Chunk chunk_2",
+            document_id="doc_1",
+            content="Alan Turing inspired graph memory work.",
+            metadata={"order": "2"},
+            embedding=[0.8, 0.2, 0.0],
+        ),
+    ]
+    chunks = [
+        Chunk(id="chunk_1", document_id="doc_1", content=chunk_nodes[0].content),
+        Chunk(id="chunk_2", document_id="doc_1", content=chunk_nodes[1].content),
+    ]
+    chunk_graphs = {
+        "chunk_1": KnowledgeGraph(
+            nodes=[
+                Node(
+                    id="entity_1",
+                    label="Person",
+                    semantic_key="person_alan-turing",
+                    name="Alan Turing",
+                    embedding=[1.0, 0.0, 0.0],
+                ),
+                Node(
+                    id="entity_2",
+                    label="Concept",
+                    semantic_key="concept_computability",
+                    name="Computability",
+                    embedding=[0.0, 1.0, 0.0],
+                ),
+            ],
+            relationships=[
+                Relationship(
+                    id="rel_1",
+                    source="entity_1",
+                    target="entity_2",
+                    label="studied",
+                )
+            ],
+        ),
+        "chunk_2": KnowledgeGraph(
+            nodes=[
+                Node(
+                    id="entity_3",
+                    label="Person",
+                    semantic_key="person_alan-turing",
+                    name="Alan Turing",
+                    properties={"field": "AI"},
+                    embedding=[1.0, 0.0, 0.0],
+                )
+            ]
+        ),
+    }
+
+    asyncio.run(graph_db.save_docs_and_chunks_to_db([document_node], chunk_nodes))
+    asyncio.run(graph_db.save_entities_and_rels(chunks, chunk_graphs))
+
+    assert graph_db.ro_query("MATCH (d:__document__) RETURN count(d)").result_set == [
+        [1]
+    ]
+    assert graph_db.ro_query("MATCH (c:__chunk__) RETURN count(c)").result_set == [[2]]
+    assert graph_db.ro_query(
+        "MATCH (:__document__)-[r:__has_chunk__]->(:__chunk__) RETURN count(r)"
+    ).result_set == [[2]]
+    assert graph_db.ro_query("MATCH (e:__entity__) RETURN count(e)").result_set == [[2]]
+    assert graph_db.ro_query(
+        "MATCH (:__chunk__)-[r:__mentions__]->(:__entity__) RETURN count(r)"
+    ).result_set == [[3]]
+    assert graph_db.ro_query(
+        "MATCH (:__entity__ {semantic_key: 'person_alan-turing'})-[r:studied]->"
+        "(:__entity__ {semantic_key: 'concept_computability'}) RETURN count(r)"
+    ).result_set == [[1]]
+    assert graph_db.ro_query(
+        "MATCH (e:__entity__ {semantic_key: 'person_alan-turing'}) RETURN e.properties"
+    ).result_set == [['{"field": "AI"}']]
+
+    indexes = _index_rows_by_key(graph_db.ro_query("CALL db.indexes()").result_set)
+    assert "FULLTEXT" in indexes[("__document__", "name")][2]["name"]
+    assert "FULLTEXT" in indexes[("__document__", "content")][2]["content"]
+    assert "FULLTEXT" in indexes[("__chunk__", "name")][2]["name"]
+    assert "FULLTEXT" in indexes[("__chunk__", "content")][2]["content"]
+    assert "FULLTEXT" in indexes[("__entity__", "name")][2]["name"]
+    assert "VECTOR" in indexes[("__document__", "embedding")][2]["embedding"]
+    assert indexes[("__document__", "embedding")][3]["embedding"]["dimension"] == 3
+    assert indexes[("__document__", "embedding")][3]["embedding"]["M"] == 32
+    assert (
+        indexes[("__document__", "embedding")][3]["embedding"]["similarityFunction"]
+        == "cosine"
+    )
+    assert "VECTOR" in indexes[("__chunk__", "embedding")][2]["embedding"]
+    assert "VECTOR" in indexes[("__entity__", "embedding")][2]["embedding"]
+
+    assert graph_db.query_fulltext_nodes(
+        "__entity__",
+        "Turing",
+        return_expression="node.name",
+    ).result_set == [["Alan Turing"]]
+    vector_results = graph_db.query_similar_nodes(
+        "__entity__",
+        [1.0, 0.0, 0.0],
+        2,
+        return_expression="node.name, score",
+    ).result_set
+    assert vector_results[0][0] == "Alan Turing"
+    assert vector_results[0][1] == pytest.approx(0.0, abs=1e-6)
+    explain_result = graph_db.explain_vector_query("__entity__", [1.0, 0.0, 0.0], 2)
+    assert "ProcedureCall" in str(explain_result)
+
+    fulltext_graph_results = asyncio.run(
+        graph_db.search("Graph", method="fulltext", limit=5)
+    )
+    assert fulltext_graph_results["__document__"][0]["name"] == "Graph Memory"
+    assert any(
+        hit["name"] == "Chunk chunk_2" for hit in fulltext_graph_results["__chunk__"]
+    )
+
+    fulltext_turing_results = asyncio.run(
+        graph_db.search("Turing", method="fulltext", limit=5)
+    )
+    assert any(
+        hit["name"] == "Chunk chunk_1" for hit in fulltext_turing_results["__chunk__"]
+    )
+    assert fulltext_turing_results["__entity__"][0]["name"] == "Alan Turing"
+
+    vector_search_results = asyncio.run(
+        graph_db.search(
+            "ignored raw query",
+            method="vector",
+            limit=2,
+            query_embedding=[1.0, 0.0, 0.0],
+        )
+    )
+    assert vector_search_results["__document__"][0]["name"] == "Graph Memory"
+    assert vector_search_results["__chunk__"][0]["name"] == "Chunk chunk_1"
+    assert vector_search_results["__entity__"][0]["name"] == "Alan Turing"
+
+
+def test_vector_search_requires_query_embedding(graph_db: FalkorGraphDB) -> None:
+    """Vector search should fail fast when no query embedding is supplied."""
+
+    with pytest.raises(ValueError, match="requires a query embedding"):
+        asyncio.run(graph_db.search("hello", method="vector"))
+
+
+def test_save_entities_and_rels_rejects_unknown_chunk(graph_db: FalkorGraphDB) -> None:
+    """Chunk graphs should fail fast when their owning chunk is missing."""
+
+    chunks = [Chunk(id="chunk_1", document_id="doc_1", content="hello")]
+    chunk_graphs = {"missing_chunk": KnowledgeGraph()}
+
+    with pytest.raises(ValueError, match="Unknown chunk ids"):
+        asyncio.run(graph_db.save_entities_and_rels(chunks, chunk_graphs))
+
+
+def test_save_entities_and_rels_rejects_relationships_with_unknown_nodes(
+    graph_db: FalkorGraphDB,
+) -> None:
+    """Relationships should reference nodes present in the same chunk graph."""
+
+    chunks = [Chunk(id="chunk_1", document_id="doc_1", content="hello")]
+    chunk_graphs = {
+        "chunk_1": KnowledgeGraph(
+            nodes=[],
+            relationships=[
+                Relationship(
+                    id="rel_1",
+                    source="missing_source",
+                    target="missing_target",
+                    label="relates_to",
+                )
+            ],
+        )
+    }
+
+    with pytest.raises(ValueError, match="Relationship references a node missing"):
+        asyncio.run(graph_db.save_entities_and_rels(chunks, chunk_graphs))

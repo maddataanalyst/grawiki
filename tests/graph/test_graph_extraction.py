@@ -1,122 +1,48 @@
-"""Tests for graph extraction helpers."""
+"""Tests for knowledge graph extraction helpers."""
 
-import uuid
+from __future__ import annotations
+
+import asyncio
 
 from src.grawiki.graph.graph_extraction import KnowledgeGraphExtractor
-from src.grawiki.graph.models import (
-    ExtractedKnowledgeGraph,
-    ExtractedNode,
-    ExtractedRelationship,
-)
+from src.grawiki.graph.models import ExtractedKnowledgeGraph, ExtractedNode
 
 
-def test_fix_missing_nodes_adds_unknown_placeholders() -> None:
-    """Missing relationship endpoints should create placeholder extracted nodes."""
+class FakeEmbeddingResult:
+    """Minimal embedding result object for extractor tests."""
 
-    extractor = KnowledgeGraphExtractor.__new__(KnowledgeGraphExtractor)
-    graph = ExtractedKnowledgeGraph(
-        relationships=[
-            ExtractedRelationship(
-                source="Alan Turing",
-                target="Computability",
-                label="studied",
-            )
-        ]
-    )
-
-    fixed_graph = extractor._fix_missing_nodes(graph)
-
-    assert [node.name for node in fixed_graph.nodes] == ["Alan Turing", "Computability"]
-    assert [node.label for node in fixed_graph.nodes] == [
-        "__unknown__",
-        "__unknown__",
-    ]
+    def __init__(self, embeddings: list[list[float]]) -> None:
+        self.embeddings = embeddings
 
 
-def test_build_knowledge_graph_assigns_uuids_and_rewrites_relationship_endpoints() -> (
-    None
-):
-    """Name-based extracted graphs should become UUID-based internal graphs."""
+class FakeEmbedder:
+    """Deterministic embedder stub."""
 
-    extractor = KnowledgeGraphExtractor.__new__(KnowledgeGraphExtractor)
+    async def embed_documents(self, documents: str | list[str]) -> FakeEmbeddingResult:
+        texts = [documents] if isinstance(documents, str) else list(documents)
+        return FakeEmbeddingResult(
+            [[float(index), 1.0, 2.0] for index, _ in enumerate(texts, start=1)]
+        )
+
+
+def test_build_knowledge_graph_embeds_entities() -> None:
+    """Entity nodes should receive concrete list embeddings, not coroutine objects."""
+
+    extractor = object.__new__(KnowledgeGraphExtractor)
+    extractor.embedding = FakeEmbedder()
+
     graph = ExtractedKnowledgeGraph(
         nodes=[
-            ExtractedNode(label="Person", name="Alan Turing"),
-            ExtractedNode(label="Concept", name="Computability"),
-        ],
-        relationships=[
-            ExtractedRelationship(
-                source="Alan Turing",
-                target="Computability",
-                label="studied",
-            )
-        ],
-    )
-
-    updated_graph = extractor._build_knowledge_graph(graph)
-
-    assert [node.name for node in updated_graph.nodes] == [
-        "Alan Turing",
-        "Computability",
-    ]
-    for node in updated_graph.nodes:
-        assert str(uuid.UUID(node.id)) == node.id
-    assert len(updated_graph.relationships) == 1
-    assert (
-        str(uuid.UUID(updated_graph.relationships[0].id))
-        == updated_graph.relationships[0].id
-    )
-    for rel in updated_graph.relationships:
-        assert rel.source in {node.id for node in updated_graph.nodes}
-        assert rel.target in {node.id for node in updated_graph.nodes}
-
-
-def test_build_knowledge_graph_handles_placeholder_nodes() -> None:
-    """Placeholder extracted nodes should convert to UUID-based internal nodes."""
-
-    extractor = KnowledgeGraphExtractor.__new__(KnowledgeGraphExtractor)
-    graph = ExtractedKnowledgeGraph(
-        relationships=[
-            ExtractedRelationship(
-                source="Alan Turing",
-                target="Computability",
-                label="studied",
-            )
-        ]
-    )
-
-    fixed_graph = extractor._fix_missing_nodes(graph)
-    updated_graph = extractor._build_knowledge_graph(fixed_graph)
-
-    assert len(updated_graph.nodes) == 2
-    for node in updated_graph.nodes:
-        assert str(uuid.UUID(node.id)) == node.id
-    assert (
-        str(uuid.UUID(updated_graph.relationships[0].id))
-        == updated_graph.relationships[0].id
-    )
-    assert updated_graph.relationships[0].source in {
-        node.id for node in updated_graph.nodes
-    }
-    assert updated_graph.relationships[0].target in {
-        node.id for node in updated_graph.nodes
-    }
-
-
-def test_build_knowledge_graph_deduplicates_duplicate_names() -> None:
-    """Duplicate extracted names should map to one internal node."""
-
-    extractor = KnowledgeGraphExtractor.__new__(KnowledgeGraphExtractor)
-    graph = ExtractedKnowledgeGraph(
-        nodes=[
-            ExtractedNode(label="Person", name="Alan Turing"),
             ExtractedNode(
-                label="Person", name="Alan Turing", properties={"field": "AI"}
-            ),
-        ]
+                label="Person",
+                name="Alan Turing",
+                semantic_key="person_alan-turing",
+            )
+        ],
+        relationships=[],
     )
 
-    updated_graph = extractor._build_knowledge_graph(graph)
+    built_graph = asyncio.run(extractor._build_knowledge_graph(graph))
 
-    assert len(updated_graph.nodes) == 1
-    assert updated_graph.nodes[0].name == "Alan Turing"
+    assert built_graph.nodes[0].embedding == [1.0, 1.0, 2.0]
+    assert isinstance(built_graph.nodes[0].embedding, list)

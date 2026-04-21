@@ -1,4 +1,4 @@
-"""Step-by-step pipeline debug notebook exported as a Python script."""
+"""Step-by-step extraction and FalkorDB persistence debug notebook."""
 
 # ruff: noqa: F704
 
@@ -26,12 +26,13 @@ chunkers = reload(chunkers)
 load_dotenv(override=True)
 
 DOC_PATH = Path("experimental_data/agent_architectures.txt")
-DB_PATH = Path("tmp/debug_pipeline.db")
-GRAPH_NAME = "debug_pipeline"
+DB_PATH = Path("tmp/extraction_debug.db")
+GRAPH_NAME = "extraction_debug"
 MODEL_NAME = "openai:gpt-5-mini"
 EMBEDDING_MODEL = "openai:text-embedding-3-small"
 CHUNKING_STRATEGY = "sentence"
 MAX_WORKERS = 4
+MAX_CHUNKS = 2
 
 pprint(
     {
@@ -42,6 +43,7 @@ pprint(
         "embedding_model": EMBEDDING_MODEL,
         "chunking_strategy": CHUNKING_STRATEGY,
         "max_workers": MAX_WORKERS,
+        "max_chunks": MAX_CHUNKS,
     }
 )
 
@@ -87,8 +89,10 @@ pprint(
 )
 
 
-# %% Chunk document
-chunks = pipeline.chunk_document(document)
+# %% Chunk document and keep a small sample
+all_chunks = pipeline.chunk_document(document)
+selected_chunks = all_chunks[:MAX_CHUNKS]
+
 pprint(
     [
         {
@@ -96,40 +100,45 @@ pprint(
             "document_id": chunk.document_id,
             "preview": chunk.content[:220],
         }
-        for chunk in chunks[:5]
+        for chunk in selected_chunks
     ]
 )
 
 
-# %% Embed document and chunks
+# %% Embed document and selected chunks
 document_embedding = await pipeline.embed_document(document)
-chunk_embeddings = await pipeline.embed_chunks(chunks)
+selected_chunk_embeddings = await pipeline.embed_chunks(selected_chunks)
 
 pprint(
     {
         "document_embedding_dimension": len(document_embedding),
-        "chunk_count": len(chunk_embeddings),
-        "chunk_embedding_dimension": len(chunk_embeddings[0])
-        if chunk_embeddings
-        else 0,
+        "selected_chunk_count": len(selected_chunk_embeddings),
+        "chunk_embedding_dimension": (
+            len(selected_chunk_embeddings[0]) if selected_chunk_embeddings else 0
+        ),
     }
 )
 
 
-# %% Build graph nodes
+# %% Build nodes
 document_node = pipeline.build_document_node(document, document_embedding)
-chunk_nodes = pipeline.build_chunk_nodes(chunks, chunk_embeddings)
+selected_chunk_nodes = pipeline.build_chunk_nodes(
+    selected_chunks,
+    selected_chunk_embeddings,
+)
 
 pprint(
     {
         "document_node": document_node.model_dump(),
-        "first_chunk_node": chunk_nodes[0].model_dump() if chunk_nodes else None,
+        "first_chunk_node": (
+            selected_chunk_nodes[0].model_dump() if selected_chunk_nodes else None
+        ),
     }
 )
 
 
-# %% Persist documents and chunks
-await pipeline.persist_documents_and_chunks(document_node, chunk_nodes)
+# %% Persist document and selected chunks
+await pipeline.persist_documents_and_chunks(document_node, selected_chunk_nodes)
 
 pprint(
     {
@@ -145,17 +154,19 @@ pprint(
 
 
 # %% Extract chunk graphs
-chunk_graphs = await pipeline.extract_chunk_graphs(chunks)
+chunk_graphs = await pipeline.extract_chunk_graphs(selected_chunks)
 
-pprint(
-    {
-        chunk_id: {
+for chunk_id, graph in chunk_graphs.items():
+    pprint(
+        {
+            "chunk_id": chunk_id,
             "nodes": [
                 {
                     "id": node.id,
                     "label": node.label,
                     "semantic_key": node.semantic_key,
                     "name": node.name,
+                    "properties": node.properties,
                     "embedding_dimension": len(node.embedding),
                 }
                 for node in graph.nodes
@@ -166,31 +177,31 @@ pprint(
                     "label": rel.label,
                     "source": rel.source,
                     "target": rel.target,
+                    "properties": rel.properties,
                 }
                 for rel in graph.relationships
             ],
         }
-        for chunk_id, graph in chunk_graphs.items()
-    }
-)
+    )
 
 
-# %% Persist entities and relationships
-await pipeline.persist_entities_and_relationships(chunks, chunk_graphs)
+# %% Persist extracted entities and relationships
+await pipeline.persist_entities_and_relationships(selected_chunks, chunk_graphs)
 
 pprint(
     {
         "entities": adapter.ro_query(
             "MATCH (e:__entity__) "
-            "RETURN e.name, e.label, e.semantic_key ORDER BY e.name"
+            "RETURN e.id, e.name, e.label, e.semantic_key, e.properties ORDER BY e.name"
         ).result_set,
         "mentions": adapter.ro_query(
             "MATCH (c:__chunk__)-[:__mentions__]->(e:__entity__) "
-            "RETURN c.id, e.name, e.label ORDER BY c.id, e.name"
+            "RETURN c.id, e.name, e.label, e.semantic_key ORDER BY c.id, e.name"
         ).result_set,
         "relationships": adapter.ro_query(
             "MATCH (source:__entity__)-[r]->(target:__entity__) "
-            "RETURN source.name, type(r), target.name ORDER BY source.name, target.name"
+            "RETURN source.name, type(r), target.name, r.properties "
+            "ORDER BY source.name, target.name"
         ).result_set,
     }
 )
@@ -209,12 +220,12 @@ pprint(await pipeline.search("machine intelligence", method="vector", limit=5))
 
 
 # %% Explain vector query
-query_embedding = (
+entity_query_embedding = (
     await pipeline.embedding.embed_query("machine intelligence")
 ).embeddings[0]
-pprint(adapter.explain_vector_query("__entity__", query_embedding, 5))
+pprint(adapter.explain_vector_query("__entity__", entity_query_embedding, 5))
 
 
 # %% One-shot ingestion alternative
-# Uncomment to run the whole flow in one call instead of step by step.
+# Uncomment to run the full flow in one call instead of step by step.
 # await pipeline.ingest_file(DOC_PATH)

@@ -3,10 +3,11 @@ name = "grawiki"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "chonkie>=1.6.2",
-    "pydantic-ai>=0.8.1",
+    "pandas>=3.0.2",
+    "pydantic-ai-slim[openai,openrouter]>=1.84.1",
     "unstructured>=0.22.21",
 ]
 

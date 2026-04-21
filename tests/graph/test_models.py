@@ -48,20 +48,27 @@ def test_memory_node_still_uses_base_node_contract() -> None:
     node = MemoryNode(
         id="memory_tooling_preference",
         name="Tooling preference",
+        semantic_key="memory_tooling_preference",
         content="Use uv for package management.",
     )
 
     assert node.id == "memory_tooling_preference"
     assert node.label == "__memory__"
     assert node.name == "Tooling preference"
+    assert node.semantic_key == "memory_tooling_preference"
     assert node.content == "Use uv for package management."
 
 
 def test_extracted_node_does_not_require_machine_id() -> None:
     """Extractor-facing nodes should not require a durable machine identifier."""
 
-    node = ExtractedNode(label="Person", name="Alan Turing")
+    node = ExtractedNode(
+        label="Person",
+        name="Alan Turing",
+        semantic_key="person_alan-turing",
+    )
 
     assert node.label == "Person"
     assert node.name == "Alan Turing"
+    assert node.semantic_key == "person_alan-turing"
     assert node.properties == {}
