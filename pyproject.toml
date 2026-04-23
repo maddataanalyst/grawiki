@@ -8,6 +8,7 @@ dependencies = [
     "chonkie>=1.6.2",
     "pandas>=3.0.2",
     "pydantic-ai-slim[openai,openrouter]>=1.84.1",
+    "rapidfuzz>=3.14.5",
     "unstructured>=0.22.21",
 ]
 

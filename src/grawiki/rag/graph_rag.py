@@ -26,7 +26,7 @@ from src.grawiki.retrieval.retriever import Retriever
 logger = logging.getLogger(__name__)
 
 
-_DEFAULT_SEARCH_LABELS = ["__document__", "__chunk__", "__entity__"]
+_DEFAULT_SEARCH_LABELS = ["__chunk__", "__entity__"]
 
 
 class GraphRAG:
