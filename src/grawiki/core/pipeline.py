@@ -13,7 +13,7 @@ from src.grawiki.core.commons import Chunk, Document
 from src.grawiki.db.base import GraphDB, SearchMethod, SearchResults
 from src.grawiki.doc_processing.chunkers import Chunker
 from src.grawiki.doc_processing.document_processing import chunk_document, read_document
-from src.grawiki.graph.graph_extraction import KnowledgeGraphExtractor
+from src.grawiki.graph.extraction import KnowledgeGraphExtractor
 from src.grawiki.graph.models import ChunkNode, DocumentNode, KnowledgeGraph
 
 

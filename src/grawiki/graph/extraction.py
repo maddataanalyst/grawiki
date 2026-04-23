@@ -4,7 +4,7 @@ import uuid
 
 from pydantic_ai import Agent, Embedder
 from src.grawiki.core.commons import Chunk
-from src.grawiki.graph.graph_prompts import KG_EXTRACTION_PROMPT
+from src.grawiki.graph.prompts import KG_EXTRACTION_PROMPT
 from src.grawiki.graph.models import (
     ExtractedKnowledgeGraph,
     ExtractedNode,

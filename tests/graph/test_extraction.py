@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
-from src.grawiki.graph.graph_extraction import KnowledgeGraphExtractor
-from src.grawiki.graph.models import ExtractedKnowledgeGraph, ExtractedNode
+from src.grawiki.graph.extraction import KnowledgeGraphExtractor
+from src.grawiki.graph.extraction import ExtractedKnowledgeGraph, ExtractedNode
 
 
 class FakeEmbeddingResult:

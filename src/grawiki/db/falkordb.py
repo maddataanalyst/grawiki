@@ -5,21 +5,30 @@ from __future__ import annotations
 import math
 import json
 import logging
+import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from redis.exceptions import ResponseError
 from redislite.falkordb_client import FalkorDB
 
-from src.grawiki.core.commons import Chunk
-from src.grawiki.db.base import GraphDB, SearchMethod, SearchResults
+from src.grawiki.db.base import GraphDB, NodeHit, SearchResults
 from src.grawiki.db.cypher_queries import (
-    build_chunk_upsert_query,
+    build_chunk_node_upsert_query,
     build_document_upsert_query,
-    build_entity_upsert_query,
-    build_relationship_upsert_query,
+    build_entity_node_upsert_query,
+    build_entity_rel_upsert_query,
+    build_has_chunk_rel_query,
+    build_memory_node_upsert_query,
+    build_mentions_rel_query,
 )
-from src.grawiki.graph.models import ChunkNode, DocumentNode, KnowledgeGraph, Node
+from src.grawiki.graph.models import (
+    ChunkNode,
+    DocumentNode,
+    MemoryNode,
+    Node,
+    Relationship,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -28,9 +37,31 @@ logger = logging.getLogger(__name__)
 _FULLTEXT_INDEX_FIELDS: dict[str, tuple[str, ...]] = {
     "__document__": ("name", "content"),
     "__chunk__": ("name", "content"),
+    "__memory__": ("name", "content"),
     "__entity__": ("name",),
 }
-_VECTOR_INDEX_LABELS = ("__document__", "__chunk__", "__entity__")
+_FALLBACK_FULLTEXT_FIELDS: tuple[str, ...] = ("name",)
+_VECTOR_INDEX_LABELS = ("__document__", "__chunk__", "__memory__", "__entity__")
+
+# Column order used by the generic node-row return expression. Keeping this
+# in one place lets the parsing helper index into result rows safely.
+_NODE_COLUMNS: tuple[str, ...] = (
+    "id",
+    "label",
+    "semantic_key",
+    "name",
+    "properties",
+    "content",
+    "document_id",
+    "creation_date",
+    "metadata",
+)
+
+# Stored relationship types must match this shape to be safe to interpolate
+# into Cypher. This accepts the project's ``__system__``-style reserved
+# types without the lossy normalization that ``sanitize_cypher_identifier``
+# applies to entity labels.
+_REL_TYPE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class FalkorGraphDB(GraphDB):
@@ -90,92 +121,6 @@ class FalkorGraphDB(GraphDB):
         if embedding_dimensions:
             self._ensure_vector_indexes(embedding_dimensions)
 
-    async def save_docs_and_chunks_to_db(
-        self,
-        doc_nodes: list[DocumentNode],
-        chunk_nodes: list[ChunkNode],
-    ) -> None:
-        """Persist prepared document and chunk nodes to FalkorDBLite.
-
-        Parameters
-        ----------
-        doc_nodes : list[DocumentNode]
-            Document nodes to upsert.
-        chunk_nodes : list[ChunkNode]
-            Chunk nodes to upsert.
-        """
-
-        await self.setup(self._collect_embedding_dimensions([*doc_nodes, *chunk_nodes]))
-
-        for doc_node in doc_nodes:
-            payload = doc_node.model_dump()
-            payload["metadata"] = self._serialize_mapping(doc_node.metadata)
-            embedding_literal = self._serialize_embedding(doc_node.embedding)
-            self._query(build_document_upsert_query(embedding_literal), payload)
-
-        for chunk_node in chunk_nodes:
-            payload = chunk_node.model_dump()
-            payload["metadata"] = self._serialize_mapping(chunk_node.metadata)
-            embedding_literal = self._serialize_embedding(chunk_node.embedding)
-            self._query(build_chunk_upsert_query(embedding_literal), payload)
-
-    async def save_entities_and_rels(
-        self,
-        chunks: list[Chunk],
-        chunk_graphs: dict[str, KnowledgeGraph],
-    ) -> None:
-        """Persist extracted entities and relationships for the provided chunks.
-
-        Parameters
-        ----------
-        chunks : list[Chunk]
-            Chunks that own the extracted graphs.
-        chunk_graphs : dict[str, KnowledgeGraph]
-            Extracted graphs keyed by chunk identifier.
-
-        Raises
-        ------
-        ValueError
-            Raised when a graph references an unknown chunk identifier.
-        """
-
-        chunks_by_id = {chunk.id: chunk for chunk in chunks}
-
-        unknown_chunk_ids = sorted(set(chunk_graphs) - set(chunks_by_id))
-        if unknown_chunk_ids:
-            missing = ", ".join(unknown_chunk_ids)
-            raise ValueError(f"Unknown chunk ids in chunk_graphs: {missing}")
-
-        entity_nodes = [node for graph in chunk_graphs.values() for node in graph.nodes]
-        await self.setup(self._collect_embedding_dimensions(entity_nodes))
-
-        for chunk_id, graph in chunk_graphs.items():
-            nodes_by_id = {node.id: node for node in graph.nodes}
-
-            for node in graph.nodes:
-                self._save_entity(chunk_id=chunk_id, node=node)
-
-            for relationship in graph.relationships:
-                try:
-                    source_node = nodes_by_id[relationship.source]
-                    target_node = nodes_by_id[relationship.target]
-                except KeyError as exc:
-                    raise ValueError(
-                        "Relationship references a node missing from the "
-                        f"chunk graph for chunk '{chunk_id}'."
-                    ) from exc
-
-                self._query(
-                    build_relationship_upsert_query(relationship.label),
-                    {
-                        "id": relationship.id,
-                        "label": relationship.label,
-                        "source_semantic_key": source_node.semantic_key,
-                        "target_semantic_key": target_node.semantic_key,
-                        "properties": self._serialize_mapping(relationship.properties),
-                    },
-                )
-
     def query(self, query: str, params: dict[str, Any] | None = None) -> Any:
         """Execute a write-capable query.
 
@@ -194,38 +139,313 @@ class FalkorGraphDB(GraphDB):
 
         return self._query(query, params)
 
-    async def search(
+    async def ensure_indexes(
         self,
-        query: str,
-        method: SearchMethod,
         *,
-        limit: int = 10,
-        query_embedding: list[float] | None = None,
-    ) -> SearchResults:
-        """Search documents, chunks, and entities.
+        labels: Iterable[str],
+        vector_dims: Mapping[str, int] | None = None,
+    ) -> None:
+        """Ensure full-text and vector indexes exist for ``labels``.
 
         Parameters
         ----------
-        query : str
-            Raw user query text.
-        method : {"fulltext", "vector"}
-            Search strategy to execute.
+        labels : Iterable[str]
+            Node labels whose indexes should be created.
+        vector_dims : Mapping[str, int] | None, optional
+            Per-label embedding dimensionality. Labels omitted from the
+            mapping do not get a vector index.
+        """
+
+        labels_list = list(labels)
+        existing = self._list_indexes()
+
+        for label in labels_list:
+            fields = _FULLTEXT_INDEX_FIELDS.get(label, _FALLBACK_FULLTEXT_FIELDS)
+            for property_name in fields:
+                if self._has_index(existing, label, property_name, "FULLTEXT"):
+                    continue
+                logger.info(
+                    "Creating FalkorDB full-text index for %s.%s",
+                    label,
+                    property_name,
+                )
+                self._query(
+                    f"CREATE FULLTEXT INDEX FOR (n:{label}) ON (n.{property_name})"
+                )
+                existing = self._list_indexes()
+
+        if not vector_dims:
+            return
+
+        for label in labels_list:
+            dimension = vector_dims.get(label)
+            if dimension is None:
+                continue
+            known_dimension = self._vector_index_dimensions.get(label)
+            if known_dimension is not None and known_dimension != dimension:
+                raise ValueError(
+                    "Embedding dimension mismatch for "
+                    f"{label}: expected {known_dimension}, got {dimension}."
+                )
+            if self._has_index(existing, label, "embedding", "VECTOR"):
+                self._vector_index_dimensions[label] = dimension
+                continue
+
+            logger.info(
+                "Creating FalkorDB vector index for %s.embedding with dimension %s",
+                label,
+                dimension,
+            )
+            self._query(
+                "CREATE VECTOR INDEX FOR (n:{label}) ON (n.embedding) "
+                "OPTIONS {{dimension:{dimension}, similarityFunction:'{similarity}', "
+                "M:{m}, efConstruction:{ef_construction}, efRuntime:{ef_runtime}}}".format(
+                    label=label,
+                    dimension=dimension,
+                    similarity=self.vector_similarity_function,
+                    m=self.vector_index_m,
+                    ef_construction=self.vector_index_ef_construction,
+                    ef_runtime=self.vector_index_ef_runtime,
+                )
+            )
+            self._vector_index_dimensions[label] = dimension
+            existing = self._list_indexes()
+
+    async def upsert_nodes(self, nodes: Sequence[Node]) -> None:
+        """Upsert nodes, creating indexes on first use per label.
+
+        Parameters
+        ----------
+        nodes : Sequence[Node]
+            Nodes to create or update. Dispatches on concrete type and label.
+        """
+
+        labels: set[str] = set()
+        dims: dict[str, int] = {}
+        for node in nodes:
+            if isinstance(node, (DocumentNode, ChunkNode, MemoryNode)):
+                labels.add(node.label)
+            else:
+                labels.add("__entity__")
+            if node.embedding:
+                key = node.label if node.label in _VECTOR_INDEX_LABELS else "__entity__"
+                dims[key] = len(node.embedding)
+
+        await self.ensure_indexes(labels=labels, vector_dims=dims or None)
+
+        for node in nodes:
+            self._upsert_single_node(node)
+
+    async def upsert_relationships(self, rels: Sequence[Relationship]) -> None:
+        """Upsert relationships, dispatching on label for match semantics.
+
+        Parameters
+        ----------
+        rels : Sequence[Relationship]
+            Relationships to create or update.
+
+        Notes
+        -----
+        ``__has_chunk__`` matches both endpoints by node ``id``.
+        ``__mentions__`` matches the entity target by ``semantic_key``
+        (stored as ``rel.target``) so entity merging is transparent.
+        All other labels match entity endpoints by ``id``.
+        """
+
+        for rel in rels:
+            props = self._serialize_mapping(rel.properties)
+            if rel.label == "__has_chunk__":
+                self._query(
+                    build_has_chunk_rel_query(),
+                    {"source": rel.source, "target": rel.target},
+                )
+            elif rel.label == "__mentions__":
+                self._query(
+                    build_mentions_rel_query(),
+                    {"source": rel.source, "target": rel.target},
+                )
+            else:
+                self._query(
+                    build_entity_rel_upsert_query(rel.label),
+                    {
+                        "source": rel.source,
+                        "target": rel.target,
+                        "id": rel.id,
+                        "label": rel.label,
+                        "properties": props,
+                    },
+                )
+
+    def _upsert_single_node(self, node: Node) -> None:
+        """Dispatch one node upsert to the correct Cypher builder."""
+
+        embedding_literal = self._serialize_embedding(node.embedding)
+        if isinstance(node, DocumentNode):
+            payload = node.model_dump()
+            payload["metadata"] = self._serialize_mapping(node.metadata)
+            self._query(build_document_upsert_query(embedding_literal), payload)
+        elif isinstance(node, ChunkNode):
+            payload = node.model_dump()
+            payload["metadata"] = self._serialize_mapping(node.metadata)
+            self._query(build_chunk_node_upsert_query(embedding_literal), payload)
+        elif isinstance(node, MemoryNode):
+            payload = node.model_dump()
+            payload["metadata"] = self._serialize_mapping(node.metadata)
+            self._query(build_memory_node_upsert_query(embedding_literal), payload)
+        else:
+            self._query(
+                build_entity_node_upsert_query(node.label, embedding_literal),
+                {
+                    "id": node.id,
+                    "label": node.label,
+                    "name": node.name,
+                    "semantic_key": node.semantic_key,
+                    "properties": self._serialize_mapping(node.properties),
+                },
+            )
+
+    async def fulltext_search(
+        self,
+        *,
+        labels: Sequence[str],
+        query_text: str,
+        limit: int = 10,
+    ) -> list[NodeHit]:
+        """Run a full-text search across one or more node labels.
+
+        Parameters
+        ----------
+        labels : Sequence[str]
+            Labels whose full-text indexes should be queried.
+        query_text : str
+            Raw full-text query string.
         limit : int, optional
-            Maximum number of results to return per node family.
-        query_embedding : list[float] | None, optional
-            Query vector used for vector search.
+            Maximum number of hits to return per label.
 
         Returns
         -------
-        SearchResults
-            Search hits grouped by node family.
+        list[NodeHit]
+            Flat list of hits across the requested labels.
         """
 
-        if method == "fulltext":
-            return self._search_fulltext(query, limit=limit)
-        if query_embedding is None:
-            raise ValueError("Vector search requires a query embedding.")
-        return self._search_vector(query_embedding, limit=limit)
+        return_expression = f"{self._node_return_expression()} LIMIT {int(limit)}"
+        hits: list[NodeHit] = []
+        for label in labels:
+            result = self.query_fulltext_nodes(
+                label,
+                query_text,
+                return_expression=return_expression,
+            )
+            for row in result.result_set:
+                node = self._node_from_row(row, system_label=label)
+                hits.append(NodeHit(node=node, matched_on="fulltext"))
+        return hits
+
+    async def vector_search(
+        self,
+        *,
+        labels: Sequence[str],
+        query_embedding: list[float],
+        limit: int = 10,
+    ) -> list[NodeHit]:
+        """Run a vector similarity search across one or more node labels.
+
+        Parameters
+        ----------
+        labels : Sequence[str]
+            Labels whose vector indexes should be queried.
+        query_embedding : list[float]
+            Pre-computed query embedding.
+        limit : int, optional
+            Maximum number of hits to return per label.
+
+        Returns
+        -------
+        list[NodeHit]
+            Flat list of hits across the requested labels.
+        """
+
+        return_expression = f"{self._node_return_expression()}, score"
+        hits: list[NodeHit] = []
+        for label in labels:
+            result = self.query_similar_nodes(
+                label,
+                query_embedding,
+                limit,
+                return_expression=return_expression,
+            )
+            for row in result.result_set:
+                score_value = row[len(_NODE_COLUMNS)]
+                node = self._node_from_row(row, system_label=label)
+                hits.append(
+                    NodeHit(
+                        node=node,
+                        score=float(score_value),
+                        matched_on="vector",
+                    )
+                )
+        return hits
+
+    async def neighbors(
+        self,
+        *,
+        node_ids: Sequence[str],
+        rel_types: Sequence[str] | None = None,
+        depth: int = 1,
+    ) -> list[Node]:
+        """Fetch distinct outgoing neighbors of the given seed nodes.
+
+        Parameters
+        ----------
+        node_ids : Sequence[str]
+            Seed node identifiers.
+        rel_types : Sequence[str] | None, optional
+            Restrict traversal to these relationship types. ``None`` follows
+            any relationship.
+        depth : int, optional
+            Maximum traversal depth. Defaults to one hop.
+
+        Returns
+        -------
+        list[Node]
+            Distinct neighbor nodes, excluding the seeds themselves.
+        """
+
+        if depth < 1:
+            raise ValueError("neighbors depth must be at least 1.")
+        if not node_ids:
+            return []
+
+        if rel_types:
+            for rel_type in rel_types:
+                if not _REL_TYPE_PATTERN.match(rel_type):
+                    raise ValueError(
+                        f"Invalid relationship type for neighbors traversal: {rel_type!r}"
+                    )
+            rel_pattern = f"[:{'|'.join(rel_types)}*1..{int(depth)}]"
+        else:
+            rel_pattern = f"[*1..{int(depth)}]"
+
+        query = (
+            f"MATCH (seed)-{rel_pattern}->(neighbor) "
+            f"WHERE seed.id IN $ids AND NOT neighbor.id IN $ids "
+            f"WITH DISTINCT neighbor "
+            f"RETURN {self._node_return_expression(variable='neighbor')}, "
+            f"labels(neighbor) AS node_labels"
+        )
+        result = self.ro_query(query, {"ids": list(node_ids)})
+
+        nodes: list[Node] = []
+        seen_ids: set[str] = set()
+        for row in result.result_set:
+            cypher_labels = row[len(_NODE_COLUMNS)] or []
+            system_label = self._canonical_system_label(cypher_labels)
+            node = self._node_from_row(row, system_label=system_label)
+            if node.id in seen_ids:
+                continue
+            seen_ids.add(node.id)
+            nodes.append(node)
+        return nodes
 
     def ro_query(self, query: str, params: dict[str, Any] | None = None) -> Any:
         """Execute a read-only query.
@@ -395,22 +615,6 @@ class FalkorGraphDB(GraphDB):
         """Execute a backend write query with optional parameters."""
 
         return self._graph.query(query, params or {})
-
-    def _save_entity(self, chunk_id: str, node: Node) -> None:
-        """Upsert one entity node and link it to its source chunk."""
-
-        embedding_literal = self._serialize_embedding(node.embedding)
-        self._query(
-            build_entity_upsert_query(node.label, embedding_literal),
-            {
-                "chunk_id": chunk_id,
-                "id": node.id,
-                "label": node.label,
-                "name": node.name,
-                "semantic_key": node.semantic_key,
-                "properties": self._serialize_mapping(node.properties),
-            },
-        )
 
     @staticmethod
     def _serialize_mapping(mapping: dict[str, str]) -> str:
@@ -735,3 +939,106 @@ class FalkorGraphDB(GraphDB):
         """Return a safely quoted Cypher string literal."""
 
         return json.dumps(value)
+
+    @staticmethod
+    def _node_return_expression(variable: str = "node") -> str:
+        """Build a return expression fetching every field needed to rebuild a Node.
+
+        Parameters
+        ----------
+        variable : str, optional
+            Cypher variable name holding the node being projected.
+
+        Returns
+        -------
+        str
+            Comma-separated projection using ``_NODE_COLUMNS`` for ordering.
+            Fields absent on a given node type yield ``NULL`` and are ignored
+            when the corresponding subclass is constructed.
+        """
+
+        return ", ".join(f"{variable}.{column}" for column in _NODE_COLUMNS)
+
+    @staticmethod
+    def _canonical_system_label(cypher_labels: Sequence[str]) -> str:
+        """Pick the ``__system__``-style label from a multi-label node.
+
+        Entity nodes are stored with both ``__entity__`` and their ontology
+        label (e.g. ``Person``). The system-style label (``__entity__``) is
+        what :meth:`_node_from_row` dispatches on.
+        """
+
+        for label in cypher_labels:
+            if label.startswith("__") and label.endswith("__"):
+                return label
+        return cypher_labels[0] if cypher_labels else ""
+
+    @staticmethod
+    def _node_from_row(row: Sequence[Any], *, system_label: str) -> Node:
+        """Rebuild a :class:`Node` (or subclass) from a Cypher result row.
+
+        Parameters
+        ----------
+        row : Sequence[Any]
+            Row produced by a projection built with
+            :meth:`_node_return_expression`. The first ``len(_NODE_COLUMNS)``
+            positions correspond to ``_NODE_COLUMNS``.
+        system_label : str
+            ``__system__``-style label used to select the concrete subclass.
+            Nodes whose label does not match a known system family are
+            returned as the generic :class:`Node`.
+        """
+
+        (
+            node_id,
+            stored_label,
+            semantic_key,
+            name,
+            properties_json,
+            content,
+            document_id,
+            creation_date,
+            metadata_json,
+        ) = row[: len(_NODE_COLUMNS)]
+
+        properties = (
+            json.loads(properties_json) if isinstance(properties_json, str) else {}
+        )
+        metadata = json.loads(metadata_json) if isinstance(metadata_json, str) else {}
+
+        if system_label == "__document__":
+            return DocumentNode(
+                id=node_id,
+                semantic_key=semantic_key,
+                name=name,
+                properties=properties,
+                content=content or "",
+                metadata=metadata,
+            )
+        if system_label == "__chunk__":
+            return ChunkNode(
+                id=node_id,
+                semantic_key=semantic_key,
+                name=name,
+                properties=properties,
+                content=content or "",
+                document_id=document_id or "",
+                metadata=metadata,
+            )
+        if system_label == "__memory__":
+            return MemoryNode(
+                id=node_id,
+                semantic_key=semantic_key,
+                name=name,
+                properties=properties,
+                content=content or "",
+                creation_date=creation_date or "",
+                metadata=metadata,
+            )
+        return Node(
+            id=node_id,
+            label=stored_label or system_label,
+            semantic_key=semantic_key,
+            name=name,
+            properties=properties,
+        )

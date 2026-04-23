@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from src.grawiki.core.commons import Chunk
+from src.grawiki.db.base import NodeHit
 from src.grawiki.db.falkordb import FalkorGraphDB
 from src.grawiki.graph.models import (
     ChunkNode,
@@ -242,3 +243,159 @@ def test_save_entities_and_rels_rejects_relationships_with_unknown_nodes(
 
     with pytest.raises(ValueError, match="Relationship references a node missing"):
         asyncio.run(graph_db.save_entities_and_rels(chunks, chunk_graphs))
+
+
+@pytest.fixture
+def populated_graph_db(graph_db: FalkorGraphDB) -> FalkorGraphDB:
+    """Populate the graph with one document, two chunks, and two entities."""
+
+    document_node = DocumentNode(
+        id="doc_1",
+        semantic_key="document_doc_1",
+        name="Graph Memory",
+        content="Graph databases support memory.",
+        metadata={"source": "unit-test"},
+        embedding=[1.0, 0.0, 0.0],
+    )
+    chunk_nodes = [
+        ChunkNode(
+            id="chunk_1",
+            semantic_key="chunk_chunk_1",
+            name="Chunk chunk_1",
+            document_id="doc_1",
+            content="Alan Turing studied computability.",
+            metadata={"order": "1"},
+            embedding=[1.0, 0.0, 0.0],
+        ),
+        ChunkNode(
+            id="chunk_2",
+            semantic_key="chunk_chunk_2",
+            name="Chunk chunk_2",
+            document_id="doc_1",
+            content="Alan Turing inspired graph memory work.",
+            metadata={"order": "2"},
+            embedding=[0.8, 0.2, 0.0],
+        ),
+    ]
+    chunks = [
+        Chunk(id="chunk_1", document_id="doc_1", content=chunk_nodes[0].content),
+        Chunk(id="chunk_2", document_id="doc_1", content=chunk_nodes[1].content),
+    ]
+    chunk_graphs = {
+        "chunk_1": KnowledgeGraph(
+            nodes=[
+                Node(
+                    id="entity_turing",
+                    label="Person",
+                    semantic_key="person_alan-turing",
+                    name="Alan Turing",
+                    embedding=[1.0, 0.0, 0.0],
+                ),
+                Node(
+                    id="entity_comp",
+                    label="Concept",
+                    semantic_key="concept_computability",
+                    name="Computability",
+                    embedding=[0.0, 1.0, 0.0],
+                ),
+            ],
+            relationships=[
+                Relationship(
+                    id="rel_1",
+                    source="entity_turing",
+                    target="entity_comp",
+                    label="studied",
+                )
+            ],
+        ),
+    }
+
+    asyncio.run(graph_db.save_docs_and_chunks_to_db([document_node], chunk_nodes))
+    asyncio.run(graph_db.save_entities_and_rels(chunks, chunk_graphs))
+    return graph_db
+
+
+def test_ensure_indexes_creates_indexes_for_memory_label(
+    graph_db: FalkorGraphDB,
+) -> None:
+    """``ensure_indexes`` should register new labels (e.g. ``__memory__``)."""
+
+    asyncio.run(
+        graph_db.ensure_indexes(
+            labels=["__memory__"],
+            vector_dims={"__memory__": 3},
+        )
+    )
+
+    indexes = _index_rows_by_key(graph_db.ro_query("CALL db.indexes()").result_set)
+    assert "FULLTEXT" in indexes[("__memory__", "name")][2]["name"]
+    assert "FULLTEXT" in indexes[("__memory__", "content")][2]["content"]
+    assert "VECTOR" in indexes[("__memory__", "embedding")][2]["embedding"]
+    assert indexes[("__memory__", "embedding")][3]["embedding"]["dimension"] == 3
+
+
+def test_fulltext_search_returns_node_hits_with_subclasses(
+    populated_graph_db: FalkorGraphDB,
+) -> None:
+    """Full-text primitive should return flat ``NodeHit`` list with proper subclasses."""
+
+    hits = asyncio.run(
+        populated_graph_db.fulltext_search(
+            labels=["__document__", "__chunk__", "__entity__"],
+            query_text="Turing",
+            limit=5,
+        )
+    )
+
+    assert all(isinstance(hit, NodeHit) for hit in hits)
+    assert all(hit.matched_on == "fulltext" for hit in hits)
+
+    chunk_hits = [hit for hit in hits if hit.node.label == "__chunk__"]
+    entity_hits = [hit for hit in hits if hit.node.label == "Person"]
+    assert chunk_hits, "expected at least one chunk hit"
+    assert isinstance(chunk_hits[0].node, ChunkNode)
+    assert chunk_hits[0].node.content
+    assert chunk_hits[0].node.document_id == "doc_1"
+    assert entity_hits, "expected at least one entity hit"
+    assert entity_hits[0].node.name == "Alan Turing"
+    assert entity_hits[0].node.semantic_key == "person_alan-turing"
+
+
+def test_vector_search_returns_scored_node_hits(
+    populated_graph_db: FalkorGraphDB,
+) -> None:
+    """Vector primitive should populate ``score`` and reconstruct Node subclasses."""
+
+    hits = asyncio.run(
+        populated_graph_db.vector_search(
+            labels=["__document__", "__chunk__", "__entity__"],
+            query_embedding=[1.0, 0.0, 0.0],
+            limit=2,
+        )
+    )
+
+    assert all(isinstance(hit, NodeHit) for hit in hits)
+    assert all(hit.matched_on == "vector" for hit in hits)
+    assert all(isinstance(hit.score, float) for hit in hits)
+
+    top_document = next(hit for hit in hits if hit.node.label == "__document__")
+    assert isinstance(top_document.node, DocumentNode)
+    assert top_document.node.name == "Graph Memory"
+    assert top_document.score == pytest.approx(0.0, abs=1e-6)
+
+
+def test_neighbors_returns_mentioned_entities(
+    populated_graph_db: FalkorGraphDB,
+) -> None:
+    """``neighbors`` should walk ``__mentions__`` edges from a chunk."""
+
+    entities = asyncio.run(
+        populated_graph_db.neighbors(
+            node_ids=["chunk_1"],
+            rel_types=["__mentions__"],
+            depth=1,
+        )
+    )
+
+    names = {node.name for node in entities}
+    assert names == {"Alan Turing", "Computability"}
