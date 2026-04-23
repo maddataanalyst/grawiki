@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from src.grawiki.core.commons import Chunk, Document
-from src.grawiki.graph.models import ChunkNode, DocumentNode, KnowledgeGraph, Node
+from src.grawiki.graph.models import (
+    ChunkNode,
+    DocumentNode,
+    KnowledgeGraph,
+    Node,
+    Relationship,
+)
 
 
 SearchMethod = Literal["fulltext", "vector"]
@@ -21,7 +28,7 @@ class NodeHit:
     Parameters
     ----------
     node : Node
-    Node returned by the backend. May be a concrete subclass such as
+        Node returned by the backend. May be a concrete subclass such as
         :class:`~src.grawiki.graph.models.DocumentNode`,
         :class:`~src.grawiki.graph.models.ChunkNode`, or
         :class:`~src.grawiki.graph.models.MemoryNode` depending on the
@@ -51,9 +58,8 @@ class GraphDB(ABC):
     :meth:`ensure_indexes`) are the foundational operations every backend
     must implement. Higher-level convenience methods
     (:meth:`save_documents_and_chunks`, :meth:`save_docs_and_chunks_to_db`,
-    :meth:`save_entities_and_rels`, :meth:`search`) are currently parallel
-    abstract methods; they will be collapsed into thin wrappers over the
-    primitives in a follow-on migration step.
+    :meth:`save_entities_and_rels`, :meth:`search`) are thin wrappers over
+    the primitives that preserve the legacy API during the migration.
     """
 
     @abstractmethod
@@ -164,6 +170,28 @@ class GraphDB(ABC):
             seeds themselves.
         """
 
+    @abstractmethod
+    async def upsert_nodes(self, nodes: Sequence[Node]) -> None:
+        """Upsert nodes. Dispatches on label for persistence semantics.
+
+        Parameters
+        ----------
+        nodes : Sequence[Node]
+            Nodes to create or update. Each node's ``label`` determines which
+            concrete storage path is used.
+        """
+
+    @abstractmethod
+    async def upsert_relationships(self, rels: Sequence[Relationship]) -> None:
+        """Upsert relationships between existing nodes (matched by id).
+
+        Parameters
+        ----------
+        rels : Sequence[Relationship]
+            Relationships to create or update. Both endpoints must already
+            exist in the graph and are matched by their ``id`` field.
+        """
+
     async def save_documents_and_chunks(
         self,
         documents: list[Document],
@@ -183,7 +211,6 @@ class GraphDB(ABC):
         chunk_nodes = [ChunkNode.from_chunk(chunk) for chunk in chunks]
         await self.save_docs_and_chunks_to_db(document_nodes, chunk_nodes)
 
-    @abstractmethod
     async def save_docs_and_chunks_to_db(
         self,
         doc_nodes: list[DocumentNode],
@@ -199,7 +226,20 @@ class GraphDB(ABC):
             Prepared chunk nodes ready for persistence.
         """
 
-    @abstractmethod
+        await self.upsert_nodes([*doc_nodes, *chunk_nodes])
+        has_chunk_rels = [
+            Relationship(
+                id=str(uuid.uuid4()),
+                source=doc_node.id,
+                target=chunk_node.id,
+                label="__has_chunk__",
+            )
+            for doc_node in doc_nodes
+            for chunk_node in chunk_nodes
+            if chunk_node.document_id == doc_node.id
+        ]
+        await self.upsert_relationships(has_chunk_rels)
+
     async def save_entities_and_rels(
         self,
         chunks: list[Chunk],
@@ -221,7 +261,41 @@ class GraphDB(ABC):
             present in ``chunks``.
         """
 
-    @abstractmethod
+        chunks_by_id = {chunk.id: chunk for chunk in chunks}
+        unknown_chunk_ids = sorted(set(chunk_graphs) - set(chunks_by_id))
+        if unknown_chunk_ids:
+            missing = ", ".join(unknown_chunk_ids)
+            raise ValueError(f"Unknown chunk ids in chunk_graphs: {missing}")
+
+        all_entity_nodes = [
+            node for graph in chunk_graphs.values() for node in graph.nodes
+        ]
+        await self.upsert_nodes(all_entity_nodes)
+
+        mentions_rels: list[Relationship] = []
+        entity_rels: list[Relationship] = []
+        for chunk_id, graph in chunk_graphs.items():
+            nodes_by_id = {node.id: node for node in graph.nodes}
+            for node in graph.nodes:
+                mentions_rels.append(
+                    Relationship(
+                        id=str(uuid.uuid4()),
+                        source=chunk_id,
+                        target=node.semantic_key,
+                        label="__mentions__",
+                    )
+                )
+            for rel in graph.relationships:
+                if rel.source not in nodes_by_id or rel.target not in nodes_by_id:
+                    raise ValueError(
+                        "Relationship references a node missing from the "
+                        f"chunk graph for chunk '{chunk_id}'."
+                    )
+                entity_rels.append(rel)
+
+        await self.upsert_relationships(mentions_rels)
+        await self.upsert_relationships(entity_rels)
+
     async def search(
         self,
         query: str,
@@ -248,3 +322,67 @@ class GraphDB(ABC):
         SearchResults
             Search hits grouped by node family.
         """
+
+        labels = ["__document__", "__chunk__", "__entity__"]
+        if method == "fulltext":
+            hits = await self.fulltext_search(
+                labels=labels, query_text=query, limit=limit
+            )
+        else:
+            if query_embedding is None:
+                raise ValueError("Vector search requires a query embedding.")
+            hits = await self.vector_search(
+                labels=labels, query_embedding=query_embedding, limit=limit
+            )
+        return _group_hits_by_label(hits, limit=limit)
+
+
+def _group_hits_by_label(hits: list[NodeHit], *, limit: int) -> SearchResults:
+    """Group a flat list of NodeHit objects by node label, preserving dict shape.
+
+    Parameters
+    ----------
+    hits : list[NodeHit]
+        Flat list of search hits from the DB primitives.
+    limit : int
+        Maximum results per label group.
+
+    Returns
+    -------
+    SearchResults
+        Hits grouped by label, capped at ``limit`` per group.
+    """
+
+    groups: SearchResults = {"__document__": [], "__chunk__": [], "__entity__": []}
+    for hit in hits:
+        label = hit.node.label
+        bucket = groups.get(label)
+        if bucket is None:
+            # Ontology labels (e.g. "Person") are entities; system labels that
+            # don't match a group (e.g. "__memory__") are dropped.
+            if not label.startswith("__"):
+                bucket = groups.get("__entity__")
+        if bucket is None:
+            continue
+        if len(bucket) >= limit:
+            continue
+        row: dict[str, Any] = {
+            "id": hit.node.id,
+            "name": hit.node.name,
+        }
+        from src.grawiki.graph.models import ChunkNode, DocumentNode
+
+        if isinstance(hit.node, DocumentNode):
+            row["content"] = hit.node.content
+        elif isinstance(hit.node, ChunkNode):
+            row["content"] = hit.node.content
+            row["document_id"] = hit.node.document_id
+        else:
+            row["label"] = hit.node.label
+            row["semantic_key"] = hit.node.semantic_key
+        if hit.matched_on:
+            row["matched_on"] = hit.matched_on
+        if hit.score:
+            row["score"] = hit.score
+        bucket.append(row)
+    return groups

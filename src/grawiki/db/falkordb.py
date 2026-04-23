@@ -12,20 +12,19 @@ from typing import Any, Iterable, Literal, Mapping, Sequence
 from redis.exceptions import ResponseError
 from redislite.falkordb_client import FalkorDB
 
-from src.grawiki.core.commons import Chunk
-from src.grawiki.db.base import GraphDB, NodeHit, SearchMethod, SearchResults
-from src.grawiki.db.cypher_queries import (
-    build_chunk_upsert_query,
-    build_document_upsert_query,
-    build_entity_upsert_query,
-    build_relationship_upsert_query,
+from src.grawiki.db.base import GraphDB, NodeHit, SearchResults
+from src.grawiki.db.cypher import (
+    link_nodes_cypher,
+    sanitize_cypher_identifier,
+    upsert_node_cypher,
+    upsert_rel_cypher,
 )
 from src.grawiki.graph.models import (
     ChunkNode,
     DocumentNode,
-    KnowledgeGraph,
     MemoryNode,
     Node,
+    Relationship,
 )
 
 
@@ -119,92 +118,6 @@ class FalkorGraphDB(GraphDB):
         if embedding_dimensions:
             self._ensure_vector_indexes(embedding_dimensions)
 
-    async def save_docs_and_chunks_to_db(
-        self,
-        doc_nodes: list[DocumentNode],
-        chunk_nodes: list[ChunkNode],
-    ) -> None:
-        """Persist prepared document and chunk nodes to FalkorDBLite.
-
-        Parameters
-        ----------
-        doc_nodes : list[DocumentNode]
-            Document nodes to upsert.
-        chunk_nodes : list[ChunkNode]
-            Chunk nodes to upsert.
-        """
-
-        await self.setup(self._collect_embedding_dimensions([*doc_nodes, *chunk_nodes]))
-
-        for doc_node in doc_nodes:
-            payload = doc_node.model_dump()
-            payload["metadata"] = self._serialize_mapping(doc_node.metadata)
-            embedding_literal = self._serialize_embedding(doc_node.embedding)
-            self._query(build_document_upsert_query(embedding_literal), payload)
-
-        for chunk_node in chunk_nodes:
-            payload = chunk_node.model_dump()
-            payload["metadata"] = self._serialize_mapping(chunk_node.metadata)
-            embedding_literal = self._serialize_embedding(chunk_node.embedding)
-            self._query(build_chunk_upsert_query(embedding_literal), payload)
-
-    async def save_entities_and_rels(
-        self,
-        chunks: list[Chunk],
-        chunk_graphs: dict[str, KnowledgeGraph],
-    ) -> None:
-        """Persist extracted entities and relationships for the provided chunks.
-
-        Parameters
-        ----------
-        chunks : list[Chunk]
-            Chunks that own the extracted graphs.
-        chunk_graphs : dict[str, KnowledgeGraph]
-            Extracted graphs keyed by chunk identifier.
-
-        Raises
-        ------
-        ValueError
-            Raised when a graph references an unknown chunk identifier.
-        """
-
-        chunks_by_id = {chunk.id: chunk for chunk in chunks}
-
-        unknown_chunk_ids = sorted(set(chunk_graphs) - set(chunks_by_id))
-        if unknown_chunk_ids:
-            missing = ", ".join(unknown_chunk_ids)
-            raise ValueError(f"Unknown chunk ids in chunk_graphs: {missing}")
-
-        entity_nodes = [node for graph in chunk_graphs.values() for node in graph.nodes]
-        await self.setup(self._collect_embedding_dimensions(entity_nodes))
-
-        for chunk_id, graph in chunk_graphs.items():
-            nodes_by_id = {node.id: node for node in graph.nodes}
-
-            for node in graph.nodes:
-                self._save_entity(chunk_id=chunk_id, node=node)
-
-            for relationship in graph.relationships:
-                try:
-                    source_node = nodes_by_id[relationship.source]
-                    target_node = nodes_by_id[relationship.target]
-                except KeyError as exc:
-                    raise ValueError(
-                        "Relationship references a node missing from the "
-                        f"chunk graph for chunk '{chunk_id}'."
-                    ) from exc
-
-                self._query(
-                    build_relationship_upsert_query(relationship.label),
-                    {
-                        "id": relationship.id,
-                        "label": relationship.label,
-                        "source_semantic_key": source_node.semantic_key,
-                        "target_semantic_key": target_node.semantic_key,
-                        "properties": self._serialize_mapping(relationship.properties),
-                    },
-                )
-
     def query(self, query: str, params: dict[str, Any] | None = None) -> Any:
         """Execute a write-capable query.
 
@@ -222,39 +135,6 @@ class FalkorGraphDB(GraphDB):
         """
 
         return self._query(query, params)
-
-    async def search(
-        self,
-        query: str,
-        method: SearchMethod,
-        *,
-        limit: int = 10,
-        query_embedding: list[float] | None = None,
-    ) -> SearchResults:
-        """Search documents, chunks, and entities.
-
-        Parameters
-        ----------
-        query : str
-            Raw user query text.
-        method : {"fulltext", "vector"}
-            Search strategy to execute.
-        limit : int, optional
-            Maximum number of results to return per node family.
-        query_embedding : list[float] | None, optional
-            Query vector used for vector search.
-
-        Returns
-        -------
-        SearchResults
-            Search hits grouped by node family.
-        """
-
-        if method == "fulltext":
-            return self._search_fulltext(query, limit=limit)
-        if query_embedding is None:
-            raise ValueError("Vector search requires a query embedding.")
-        return self._search_vector(query_embedding, limit=limit)
 
     async def ensure_indexes(
         self,
@@ -327,6 +207,149 @@ class FalkorGraphDB(GraphDB):
             )
             self._vector_index_dimensions[label] = dimension
             existing = self._list_indexes()
+
+    async def upsert_nodes(self, nodes: Sequence[Node]) -> None:
+        """Upsert nodes, creating indexes on first use per label.
+
+        Parameters
+        ----------
+        nodes : Sequence[Node]
+            Nodes to create or update. Dispatches on concrete type and label.
+        """
+
+        labels: set[str] = set()
+        dims: dict[str, int] = {}
+        for node in nodes:
+            if isinstance(node, (DocumentNode, ChunkNode, MemoryNode)):
+                labels.add(node.label)
+            else:
+                labels.add("__entity__")
+            if node.embedding:
+                key = node.label if node.label in _VECTOR_INDEX_LABELS else "__entity__"
+                dims[key] = len(node.embedding)
+
+        await self.ensure_indexes(labels=labels, vector_dims=dims or None)
+
+        for node in nodes:
+            self._upsert_single_node(node)
+
+    async def upsert_relationships(self, rels: Sequence[Relationship]) -> None:
+        """Upsert relationships, dispatching on label for match semantics.
+
+        Parameters
+        ----------
+        rels : Sequence[Relationship]
+            Relationships to create or update.
+
+        Notes
+        -----
+        ``__has_chunk__`` matches both endpoints by node ``id``.
+        ``__mentions__`` matches the entity target by ``semantic_key``
+        (stored as ``rel.target``) so entity merging is transparent.
+        All other labels match entity endpoints by ``id``.
+        """
+
+        for rel in rels:
+            if rel.label == "__has_chunk__":
+                self._query(
+                    link_nodes_cypher(
+                        "__has_chunk__",
+                        source_label="__document__",
+                        target_label="__chunk__",
+                    ),
+                    {"source": rel.source, "target": rel.target},
+                )
+            elif rel.label == "__mentions__":
+                self._query(
+                    link_nodes_cypher(
+                        "__mentions__",
+                        source_label="__chunk__",
+                        target_label="__entity__",
+                        target_match_field="semantic_key",
+                    ),
+                    {"source": rel.source, "target": rel.target},
+                )
+            else:
+                self._query(
+                    upsert_rel_cypher(rel.label),
+                    {
+                        "source": rel.source,
+                        "target": rel.target,
+                        "id": rel.id,
+                        "label": rel.label,
+                        "properties": self._serialize_mapping(rel.properties),
+                    },
+                )
+
+    def _upsert_single_node(self, node: Node) -> None:
+        """Dispatch one node upsert to the correct Cypher builder."""
+
+        embedding_literal = self._serialize_embedding(node.embedding)
+        if isinstance(node, DocumentNode):
+            payload = node.model_dump()
+            payload["metadata"] = self._serialize_mapping(node.metadata)
+            self._query(
+                upsert_node_cypher(
+                    ["__document__"],
+                    ["label", "name", "semantic_key", "content", "metadata"],
+                    embedding_literal=embedding_literal,
+                ),
+                payload,
+            )
+        elif isinstance(node, ChunkNode):
+            payload = node.model_dump()
+            payload["metadata"] = self._serialize_mapping(node.metadata)
+            self._query(
+                upsert_node_cypher(
+                    ["__chunk__"],
+                    [
+                        "label",
+                        "name",
+                        "semantic_key",
+                        "document_id",
+                        "content",
+                        "metadata",
+                    ],
+                    embedding_literal=embedding_literal,
+                ),
+                payload,
+            )
+        elif isinstance(node, MemoryNode):
+            payload = node.model_dump()
+            payload["metadata"] = self._serialize_mapping(node.metadata)
+            self._query(
+                upsert_node_cypher(
+                    ["__memory__"],
+                    [
+                        "label",
+                        "name",
+                        "semantic_key",
+                        "content",
+                        "creation_date",
+                        "metadata",
+                    ],
+                    embedding_literal=embedding_literal,
+                ),
+                payload,
+            )
+        else:
+            safe_label = sanitize_cypher_identifier(node.label)
+            self._query(
+                upsert_node_cypher(
+                    ["__entity__", safe_label],
+                    ["label", "name", "semantic_key", "properties"],
+                    merge_field="semantic_key",
+                    on_create_set_id=True,
+                    embedding_literal=embedding_literal,
+                ),
+                {
+                    "id": node.id,
+                    "label": node.label,
+                    "name": node.name,
+                    "semantic_key": node.semantic_key,
+                    "properties": self._serialize_mapping(node.properties),
+                },
+            )
 
     async def fulltext_search(
         self,
@@ -639,22 +662,6 @@ class FalkorGraphDB(GraphDB):
         """Execute a backend write query with optional parameters."""
 
         return self._graph.query(query, params or {})
-
-    def _save_entity(self, chunk_id: str, node: Node) -> None:
-        """Upsert one entity node and link it to its source chunk."""
-
-        embedding_literal = self._serialize_embedding(node.embedding)
-        self._query(
-            build_entity_upsert_query(node.label, embedding_literal),
-            {
-                "chunk_id": chunk_id,
-                "id": node.id,
-                "label": node.label,
-                "name": node.name,
-                "semantic_key": node.semantic_key,
-                "properties": self._serialize_mapping(node.properties),
-            },
-        )
 
     @staticmethod
     def _serialize_mapping(mapping: dict[str, str]) -> str:

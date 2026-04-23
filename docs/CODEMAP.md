@@ -25,7 +25,8 @@ Main application package. This is where the reusable project code lives.
 
 ### `tests/`
 
-Pytest suite covering pipeline behavior, graph models and extraction, Cypher query generation, and the FalkorDB adapter.
+Pytest suite covering `GraphRAG` behavior, the retrieval layer, graph
+models and extraction, Cypher query generation, and the FalkorDB adapter.
 
 ### `notebooks/`
 
@@ -57,11 +58,12 @@ Repository-specific operating instructions for coding agents.
 
 ### Namespace: `grawiki`
 
-Top-level Python package for the project. `src/grawiki/__init__.py` is currently empty and mainly marks the package boundary.
+Top-level Python package for the project. `src/grawiki/__init__.py`
+currently re-exports `GraphRAG`, the main public facade.
 
 ### Namespace: `grawiki.core`
 
-Core shared types and the high-level ingestion/search pipeline.
+Core shared types and embedding abstractions.
 
 #### `src/grawiki/core/commons.py`
 
@@ -72,26 +74,15 @@ Defines the lightweight source-data models used before persistence:
 
 These models are the bridge between file reading/chunking and graph persistence.
 
-#### `src/grawiki/core/pipeline.py`
+#### `src/grawiki/core/embedding.py`
 
-Main orchestration layer.
+Shared embedding contract and default implementation.
 
 Key responsibilities:
 
-- Defines small protocols for pluggable embedders and graph extractors.
-- Exposes `GrawikiPipeline`, the main end-to-end application workflow.
-- Reads a file from disk.
-- Chunks the document.
-- Computes embeddings for documents and chunks.
-- Converts raw `Document`/`Chunk` objects into graph node models.
-- Persists documents and chunks in the graph database.
-- Runs chunk-level knowledge graph extraction.
-- Persists extracted entities and relationships.
-- Exposes a `search()` method that delegates to the graph database and adds query embeddings when vector search is used.
-
-Important public method:
-
-- `GrawikiPipeline.ingest_file(path)`: the main end-to-end ingestion entrypoint.
+- Defines the `Embedder` protocol used across ingestion, extraction, and retrieval.
+- Provides `DefaultEmbedder`, the `pydantic_ai.Embedder` wrapper used by default.
+- Lets `GraphRAG`, `KnowledgeGraphExtractor`, and `Retriever` share one embedder instance.
 
 ### Namespace: `grawiki.doc_processing`
 
@@ -185,29 +176,30 @@ Defines the backend-agnostic graph database contract.
 
 Key contents:
 
-- `GraphDB`: abstract base class for persistence and search.
+- `GraphDB`: abstract base class for persistence and raw search primitives.
+- `NodeHit`: flat hit shape used by the new retrieval layer.
 - `SearchMethod`: literal type for supported retrieval modes (`fulltext` or `vector`).
 - `SearchResults`: common grouped search result shape.
 
 The `GraphDB` interface covers:
 
 - database/index setup,
-- saving documents and chunks,
-- saving extracted entities and relationships,
-- running full-text or vector search.
+- raw full-text and vector search,
+- graph-neighbor expansion,
+- generic node and relationship upserts,
+- legacy wrapper methods kept for compatibility during the migration.
 
 Use this module when adding a new database backend or changing the shared persistence/search contract.
 
-#### `src/grawiki/db/cypher_queries.py`
+#### `src/grawiki/db/cypher.py`
 
 Shared Cypher query builders.
 
 Key responsibilities:
 
-- Builds upsert queries for document nodes.
-- Builds upsert queries for chunk nodes and document-to-chunk links.
-- Builds upsert queries for entity nodes and chunk-to-entity mention links.
-- Builds upsert queries for entity-to-entity relationships.
+- Builds label-parameterized node upsert queries.
+- Builds generic entity-to-entity relationship upserts.
+- Builds explicit system-link queries such as `__has_chunk__` and `__mentions__`.
 - Sanitizes labels and relationship types into backend-safe Cypher identifiers.
 - Injects optional embedding assignments into query strings.
 
@@ -222,9 +214,8 @@ Key responsibilities:
 - Defines `FalkorGraphDB`.
 - Opens/selects a FalkorDB graph stored on disk.
 - Creates and tracks full-text and vector indexes.
-- Persists document and chunk nodes.
-- Persists extracted entities and relationships.
-- Exposes grouped full-text and vector search across documents, chunks, and entities.
+- Persists nodes and relationships through generic write primitives.
+- Exposes raw full-text search, vector search, and neighbor expansion primitives.
 - Serializes embeddings and metadata into backend-compatible forms.
 - Provides lower-level query helpers for debugging and experimentation.
 
@@ -237,28 +228,65 @@ Small export module that re-exports:
 - `GraphDB`
 - `FalkorGraphDB`
 
+### Namespace: `grawiki.retrieval`
+
+Retrieval strategy layer that owns query-side embeddings.
+
+#### `src/grawiki/retrieval/retriever.py`
+
+Key responsibilities:
+
+- Defines `Retriever`.
+- Embeds vector queries with the shared `Embedder`.
+- Calls `GraphDB.fulltext_search`, `GraphDB.vector_search`, and `GraphDB.neighbors`.
+- Deduplicates flat `NodeHit` lists returned by the DB layer.
+
+This module is where query strategy lives; the DB should stay a storage engine.
+
+### Namespace: `grawiki.rag`
+
+High-level RAG facade.
+
+#### `src/grawiki/rag/graph_rag.py`
+
+Key responsibilities:
+
+- Defines `GraphRAG`, the main end-to-end ingestion and search entrypoint.
+- Reads and chunks documents.
+- Embeds documents and chunks with the shared embedder.
+- Persists documents, chunks, entities, and relationships through `GraphDB`.
+- Delegates search to `Retriever`.
+
+Important public methods:
+
+- `GraphRAG.ingest(path)`: main file-ingestion entrypoint.
+- `GraphRAG.ingest_text(text, title)`: ingest text already available in memory.
+- `GraphRAG.search(query, method=...)`: retrieve flat `NodeHit` results.
+
 ## Data Flow Overview
 
 The main runtime path currently looks like this:
 
-1. `grawiki.core.pipeline.GrawikiPipeline.ingest_file()` starts ingestion.
+1. `grawiki.GraphRAG.ingest()` starts ingestion.
 2. `grawiki.doc_processing.document_processing.read_document()` loads a file into a `Document`.
 3. `grawiki.doc_processing.chunkers.Chunker` splits the document into `Chunk` objects.
-4. `grawiki.core.pipeline` embeds the document and chunks.
+4. `grawiki.rag.graph_rag.GraphRAG` embeds the document and chunks with the shared embedder.
 5. `grawiki.graph.models.DocumentNode` and `ChunkNode` are created for persistence.
-6. `grawiki.db.falkordb.FalkorGraphDB` persists documents and chunks.
+6. `grawiki.db.falkordb.FalkorGraphDB` upserts documents, chunks, and `__has_chunk__` relationships.
 7. `grawiki.graph.extraction.KnowledgeGraphExtractor` extracts entity/relationship graphs from each chunk.
-8. `grawiki.db.falkordb.FalkorGraphDB` persists extracted entities and relationships.
-9. `grawiki.core.pipeline.GrawikiPipeline.search()` delegates full-text or vector retrieval to the DB layer.
+8. `grawiki.db.falkordb.FalkorGraphDB` upserts extracted entities, `__mentions__` links, and entity relationships.
+9. `grawiki.retrieval.retriever.Retriever` embeds search queries when needed and calls the DB primitives.
+10. `grawiki.GraphRAG.search()` returns flat `NodeHit` results.
 
 ## Notes For New Agents
 
 ### Main integration points
 
-- For end-to-end ingestion work, start in `src/grawiki/core/pipeline.py`.
+- For end-to-end ingestion and search work, start in `src/grawiki/rag/graph_rag.py`.
 - For schema changes, start in `src/grawiki/graph/models.py`.
 - For extraction behavior changes, inspect `src/grawiki/graph/extraction.py` and `src/grawiki/graph/prompts.py` together.
-- For persistence or retrieval changes, inspect `src/grawiki/db/base.py`, `src/grawiki/db/cypher_queries.py`, and `src/grawiki/db/falkordb.py` together.
+- For persistence changes, inspect `src/grawiki/db/base.py`, `src/grawiki/db/cypher.py`, and `src/grawiki/db/falkordb.py` together.
+- For query strategy changes, inspect `src/grawiki/retrieval/retriever.py`.
 - For text loading or chunking changes, inspect `src/grawiki/doc_processing/`.
 
 ### Internal labels in the graph
