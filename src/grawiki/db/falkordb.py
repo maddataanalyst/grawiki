@@ -13,14 +13,11 @@ from redis.exceptions import ResponseError
 from redislite.falkordb_client import FalkorDB
 
 from src.grawiki.db.base import GraphDB, NodeHit, SearchResults
-from src.grawiki.db.cypher_queries import (
-    build_chunk_node_upsert_query,
-    build_document_upsert_query,
-    build_entity_node_upsert_query,
-    build_entity_rel_upsert_query,
-    build_has_chunk_rel_query,
-    build_memory_node_upsert_query,
-    build_mentions_rel_query,
+from src.grawiki.db.cypher import (
+    link_nodes_cypher,
+    sanitize_cypher_identifier,
+    upsert_node_cypher,
+    upsert_rel_cypher,
 )
 from src.grawiki.graph.models import (
     ChunkNode,
@@ -253,26 +250,34 @@ class FalkorGraphDB(GraphDB):
         """
 
         for rel in rels:
-            props = self._serialize_mapping(rel.properties)
             if rel.label == "__has_chunk__":
                 self._query(
-                    build_has_chunk_rel_query(),
+                    link_nodes_cypher(
+                        "__has_chunk__",
+                        source_label="__document__",
+                        target_label="__chunk__",
+                    ),
                     {"source": rel.source, "target": rel.target},
                 )
             elif rel.label == "__mentions__":
                 self._query(
-                    build_mentions_rel_query(),
+                    link_nodes_cypher(
+                        "__mentions__",
+                        source_label="__chunk__",
+                        target_label="__entity__",
+                        target_match_field="semantic_key",
+                    ),
                     {"source": rel.source, "target": rel.target},
                 )
             else:
                 self._query(
-                    build_entity_rel_upsert_query(rel.label),
+                    upsert_rel_cypher(rel.label),
                     {
                         "source": rel.source,
                         "target": rel.target,
                         "id": rel.id,
                         "label": rel.label,
-                        "properties": props,
+                        "properties": self._serialize_mapping(rel.properties),
                     },
                 )
 
@@ -283,18 +288,60 @@ class FalkorGraphDB(GraphDB):
         if isinstance(node, DocumentNode):
             payload = node.model_dump()
             payload["metadata"] = self._serialize_mapping(node.metadata)
-            self._query(build_document_upsert_query(embedding_literal), payload)
+            self._query(
+                upsert_node_cypher(
+                    ["__document__"],
+                    ["label", "name", "semantic_key", "content", "metadata"],
+                    embedding_literal=embedding_literal,
+                ),
+                payload,
+            )
         elif isinstance(node, ChunkNode):
             payload = node.model_dump()
             payload["metadata"] = self._serialize_mapping(node.metadata)
-            self._query(build_chunk_node_upsert_query(embedding_literal), payload)
+            self._query(
+                upsert_node_cypher(
+                    ["__chunk__"],
+                    [
+                        "label",
+                        "name",
+                        "semantic_key",
+                        "document_id",
+                        "content",
+                        "metadata",
+                    ],
+                    embedding_literal=embedding_literal,
+                ),
+                payload,
+            )
         elif isinstance(node, MemoryNode):
             payload = node.model_dump()
             payload["metadata"] = self._serialize_mapping(node.metadata)
-            self._query(build_memory_node_upsert_query(embedding_literal), payload)
-        else:
             self._query(
-                build_entity_node_upsert_query(node.label, embedding_literal),
+                upsert_node_cypher(
+                    ["__memory__"],
+                    [
+                        "label",
+                        "name",
+                        "semantic_key",
+                        "content",
+                        "creation_date",
+                        "metadata",
+                    ],
+                    embedding_literal=embedding_literal,
+                ),
+                payload,
+            )
+        else:
+            safe_label = sanitize_cypher_identifier(node.label)
+            self._query(
+                upsert_node_cypher(
+                    ["__entity__", safe_label],
+                    ["label", "name", "semantic_key", "properties"],
+                    merge_field="semantic_key",
+                    on_create_set_id=True,
+                    embedding_literal=embedding_literal,
+                ),
                 {
                     "id": node.id,
                     "label": node.label,
