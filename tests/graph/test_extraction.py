@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 
-from src.grawiki.graph.graph_extraction import KnowledgeGraphExtractor
-from src.grawiki.graph.models import ExtractedKnowledgeGraph, ExtractedNode
+from src.grawiki.graph.extraction import (
+    ExtractedKnowledgeGraph,
+    ExtractedNode,
+    KnowledgeGraphExtractor,
+)
 
 
 class FakeEmbeddingResult:
@@ -23,6 +26,21 @@ class FakeEmbedder:
         return FakeEmbeddingResult(
             [[float(index), 1.0, 2.0] for index, _ in enumerate(texts, start=1)]
         )
+
+
+def test_extracted_node_does_not_require_machine_id() -> None:
+    """Extractor-facing nodes should not require a durable machine identifier."""
+
+    node = ExtractedNode(
+        label="Person",
+        name="Alan Turing",
+        semantic_key="person_alan-turing",
+    )
+
+    assert node.label == "Person"
+    assert node.name == "Alan Turing"
+    assert node.semantic_key == "person_alan-turing"
+    assert node.properties == {}
 
 
 def test_build_knowledge_graph_embeds_entities() -> None:

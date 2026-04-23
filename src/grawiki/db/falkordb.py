@@ -5,21 +5,28 @@ from __future__ import annotations
 import math
 import json
 import logging
+import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from redis.exceptions import ResponseError
 from redislite.falkordb_client import FalkorDB
 
 from src.grawiki.core.commons import Chunk
-from src.grawiki.db.base import GraphDB, SearchMethod, SearchResults
+from src.grawiki.db.base import GraphDB, NodeHit, SearchMethod, SearchResults
 from src.grawiki.db.cypher_queries import (
     build_chunk_upsert_query,
     build_document_upsert_query,
     build_entity_upsert_query,
     build_relationship_upsert_query,
 )
-from src.grawiki.graph.models import ChunkNode, DocumentNode, KnowledgeGraph, Node
+from src.grawiki.graph.models import (
+    ChunkNode,
+    DocumentNode,
+    KnowledgeGraph,
+    MemoryNode,
+    Node,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -28,9 +35,31 @@ logger = logging.getLogger(__name__)
 _FULLTEXT_INDEX_FIELDS: dict[str, tuple[str, ...]] = {
     "__document__": ("name", "content"),
     "__chunk__": ("name", "content"),
+    "__memory__": ("name", "content"),
     "__entity__": ("name",),
 }
-_VECTOR_INDEX_LABELS = ("__document__", "__chunk__", "__entity__")
+_FALLBACK_FULLTEXT_FIELDS: tuple[str, ...] = ("name",)
+_VECTOR_INDEX_LABELS = ("__document__", "__chunk__", "__memory__", "__entity__")
+
+# Column order used by the generic node-row return expression. Keeping this
+# in one place lets the parsing helper index into result rows safely.
+_NODE_COLUMNS: tuple[str, ...] = (
+    "id",
+    "label",
+    "semantic_key",
+    "name",
+    "properties",
+    "content",
+    "document_id",
+    "creation_date",
+    "metadata",
+)
+
+# Stored relationship types must match this shape to be safe to interpolate
+# into Cypher. This accepts the project's ``__system__``-style reserved
+# types without the lossy normalization that ``sanitize_cypher_identifier``
+# applies to entity labels.
+_REL_TYPE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class FalkorGraphDB(GraphDB):
@@ -226,6 +255,221 @@ class FalkorGraphDB(GraphDB):
         if query_embedding is None:
             raise ValueError("Vector search requires a query embedding.")
         return self._search_vector(query_embedding, limit=limit)
+
+    async def ensure_indexes(
+        self,
+        *,
+        labels: Iterable[str],
+        vector_dims: Mapping[str, int] | None = None,
+    ) -> None:
+        """Ensure full-text and vector indexes exist for ``labels``.
+
+        Parameters
+        ----------
+        labels : Iterable[str]
+            Node labels whose indexes should be created.
+        vector_dims : Mapping[str, int] | None, optional
+            Per-label embedding dimensionality. Labels omitted from the
+            mapping do not get a vector index.
+        """
+
+        labels_list = list(labels)
+        existing = self._list_indexes()
+
+        for label in labels_list:
+            fields = _FULLTEXT_INDEX_FIELDS.get(label, _FALLBACK_FULLTEXT_FIELDS)
+            for property_name in fields:
+                if self._has_index(existing, label, property_name, "FULLTEXT"):
+                    continue
+                logger.info(
+                    "Creating FalkorDB full-text index for %s.%s",
+                    label,
+                    property_name,
+                )
+                self._query(
+                    f"CREATE FULLTEXT INDEX FOR (n:{label}) ON (n.{property_name})"
+                )
+                existing = self._list_indexes()
+
+        if not vector_dims:
+            return
+
+        for label in labels_list:
+            dimension = vector_dims.get(label)
+            if dimension is None:
+                continue
+            known_dimension = self._vector_index_dimensions.get(label)
+            if known_dimension is not None and known_dimension != dimension:
+                raise ValueError(
+                    "Embedding dimension mismatch for "
+                    f"{label}: expected {known_dimension}, got {dimension}."
+                )
+            if self._has_index(existing, label, "embedding", "VECTOR"):
+                self._vector_index_dimensions[label] = dimension
+                continue
+
+            logger.info(
+                "Creating FalkorDB vector index for %s.embedding with dimension %s",
+                label,
+                dimension,
+            )
+            self._query(
+                "CREATE VECTOR INDEX FOR (n:{label}) ON (n.embedding) "
+                "OPTIONS {{dimension:{dimension}, similarityFunction:'{similarity}', "
+                "M:{m}, efConstruction:{ef_construction}, efRuntime:{ef_runtime}}}".format(
+                    label=label,
+                    dimension=dimension,
+                    similarity=self.vector_similarity_function,
+                    m=self.vector_index_m,
+                    ef_construction=self.vector_index_ef_construction,
+                    ef_runtime=self.vector_index_ef_runtime,
+                )
+            )
+            self._vector_index_dimensions[label] = dimension
+            existing = self._list_indexes()
+
+    async def fulltext_search(
+        self,
+        *,
+        labels: Sequence[str],
+        query_text: str,
+        limit: int = 10,
+    ) -> list[NodeHit]:
+        """Run a full-text search across one or more node labels.
+
+        Parameters
+        ----------
+        labels : Sequence[str]
+            Labels whose full-text indexes should be queried.
+        query_text : str
+            Raw full-text query string.
+        limit : int, optional
+            Maximum number of hits to return per label.
+
+        Returns
+        -------
+        list[NodeHit]
+            Flat list of hits across the requested labels.
+        """
+
+        return_expression = f"{self._node_return_expression()} LIMIT {int(limit)}"
+        hits: list[NodeHit] = []
+        for label in labels:
+            result = self.query_fulltext_nodes(
+                label,
+                query_text,
+                return_expression=return_expression,
+            )
+            for row in result.result_set:
+                node = self._node_from_row(row, system_label=label)
+                hits.append(NodeHit(node=node, matched_on="fulltext"))
+        return hits
+
+    async def vector_search(
+        self,
+        *,
+        labels: Sequence[str],
+        query_embedding: list[float],
+        limit: int = 10,
+    ) -> list[NodeHit]:
+        """Run a vector similarity search across one or more node labels.
+
+        Parameters
+        ----------
+        labels : Sequence[str]
+            Labels whose vector indexes should be queried.
+        query_embedding : list[float]
+            Pre-computed query embedding.
+        limit : int, optional
+            Maximum number of hits to return per label.
+
+        Returns
+        -------
+        list[NodeHit]
+            Flat list of hits across the requested labels.
+        """
+
+        return_expression = f"{self._node_return_expression()}, score"
+        hits: list[NodeHit] = []
+        for label in labels:
+            result = self.query_similar_nodes(
+                label,
+                query_embedding,
+                limit,
+                return_expression=return_expression,
+            )
+            for row in result.result_set:
+                score_value = row[len(_NODE_COLUMNS)]
+                node = self._node_from_row(row, system_label=label)
+                hits.append(
+                    NodeHit(
+                        node=node,
+                        score=float(score_value),
+                        matched_on="vector",
+                    )
+                )
+        return hits
+
+    async def neighbors(
+        self,
+        *,
+        node_ids: Sequence[str],
+        rel_types: Sequence[str] | None = None,
+        depth: int = 1,
+    ) -> list[Node]:
+        """Fetch distinct outgoing neighbors of the given seed nodes.
+
+        Parameters
+        ----------
+        node_ids : Sequence[str]
+            Seed node identifiers.
+        rel_types : Sequence[str] | None, optional
+            Restrict traversal to these relationship types. ``None`` follows
+            any relationship.
+        depth : int, optional
+            Maximum traversal depth. Defaults to one hop.
+
+        Returns
+        -------
+        list[Node]
+            Distinct neighbor nodes, excluding the seeds themselves.
+        """
+
+        if depth < 1:
+            raise ValueError("neighbors depth must be at least 1.")
+        if not node_ids:
+            return []
+
+        if rel_types:
+            for rel_type in rel_types:
+                if not _REL_TYPE_PATTERN.match(rel_type):
+                    raise ValueError(
+                        f"Invalid relationship type for neighbors traversal: {rel_type!r}"
+                    )
+            rel_pattern = f"[:{'|'.join(rel_types)}*1..{int(depth)}]"
+        else:
+            rel_pattern = f"[*1..{int(depth)}]"
+
+        query = (
+            f"MATCH (seed)-{rel_pattern}->(neighbor) "
+            f"WHERE seed.id IN $ids AND NOT neighbor.id IN $ids "
+            f"WITH DISTINCT neighbor "
+            f"RETURN {self._node_return_expression(variable='neighbor')}, "
+            f"labels(neighbor) AS node_labels"
+        )
+        result = self.ro_query(query, {"ids": list(node_ids)})
+
+        nodes: list[Node] = []
+        seen_ids: set[str] = set()
+        for row in result.result_set:
+            cypher_labels = row[len(_NODE_COLUMNS)] or []
+            system_label = self._canonical_system_label(cypher_labels)
+            node = self._node_from_row(row, system_label=system_label)
+            if node.id in seen_ids:
+                continue
+            seen_ids.add(node.id)
+            nodes.append(node)
+        return nodes
 
     def ro_query(self, query: str, params: dict[str, Any] | None = None) -> Any:
         """Execute a read-only query.
@@ -735,3 +979,106 @@ class FalkorGraphDB(GraphDB):
         """Return a safely quoted Cypher string literal."""
 
         return json.dumps(value)
+
+    @staticmethod
+    def _node_return_expression(variable: str = "node") -> str:
+        """Build a return expression fetching every field needed to rebuild a Node.
+
+        Parameters
+        ----------
+        variable : str, optional
+            Cypher variable name holding the node being projected.
+
+        Returns
+        -------
+        str
+            Comma-separated projection using ``_NODE_COLUMNS`` for ordering.
+            Fields absent on a given node type yield ``NULL`` and are ignored
+            when the corresponding subclass is constructed.
+        """
+
+        return ", ".join(f"{variable}.{column}" for column in _NODE_COLUMNS)
+
+    @staticmethod
+    def _canonical_system_label(cypher_labels: Sequence[str]) -> str:
+        """Pick the ``__system__``-style label from a multi-label node.
+
+        Entity nodes are stored with both ``__entity__`` and their ontology
+        label (e.g. ``Person``). The system-style label (``__entity__``) is
+        what :meth:`_node_from_row` dispatches on.
+        """
+
+        for label in cypher_labels:
+            if label.startswith("__") and label.endswith("__"):
+                return label
+        return cypher_labels[0] if cypher_labels else ""
+
+    @staticmethod
+    def _node_from_row(row: Sequence[Any], *, system_label: str) -> Node:
+        """Rebuild a :class:`Node` (or subclass) from a Cypher result row.
+
+        Parameters
+        ----------
+        row : Sequence[Any]
+            Row produced by a projection built with
+            :meth:`_node_return_expression`. The first ``len(_NODE_COLUMNS)``
+            positions correspond to ``_NODE_COLUMNS``.
+        system_label : str
+            ``__system__``-style label used to select the concrete subclass.
+            Nodes whose label does not match a known system family are
+            returned as the generic :class:`Node`.
+        """
+
+        (
+            node_id,
+            stored_label,
+            semantic_key,
+            name,
+            properties_json,
+            content,
+            document_id,
+            creation_date,
+            metadata_json,
+        ) = row[: len(_NODE_COLUMNS)]
+
+        properties = (
+            json.loads(properties_json) if isinstance(properties_json, str) else {}
+        )
+        metadata = json.loads(metadata_json) if isinstance(metadata_json, str) else {}
+
+        if system_label == "__document__":
+            return DocumentNode(
+                id=node_id,
+                semantic_key=semantic_key,
+                name=name,
+                properties=properties,
+                content=content or "",
+                metadata=metadata,
+            )
+        if system_label == "__chunk__":
+            return ChunkNode(
+                id=node_id,
+                semantic_key=semantic_key,
+                name=name,
+                properties=properties,
+                content=content or "",
+                document_id=document_id or "",
+                metadata=metadata,
+            )
+        if system_label == "__memory__":
+            return MemoryNode(
+                id=node_id,
+                semantic_key=semantic_key,
+                name=name,
+                properties=properties,
+                content=content or "",
+                creation_date=creation_date or "",
+                metadata=metadata,
+            )
+        return Node(
+            id=node_id,
+            label=stored_label or system_label,
+            semantic_key=semantic_key,
+            name=name,
+            properties=properties,
+        )

@@ -1,7 +1,7 @@
 """Tests for graph model semantics."""
 
 from src.grawiki.core.commons import Chunk, Document
-from src.grawiki.graph.models import ChunkNode, DocumentNode, ExtractedNode, MemoryNode
+from src.grawiki.graph.models import ChunkNode, DocumentNode, MemoryNode
 
 
 def test_document_node_from_document_uses_title_as_name() -> None:
@@ -59,16 +59,3 @@ def test_memory_node_still_uses_base_node_contract() -> None:
     assert node.content == "Use uv for package management."
 
 
-def test_extracted_node_does_not_require_machine_id() -> None:
-    """Extractor-facing nodes should not require a durable machine identifier."""
-
-    node = ExtractedNode(
-        label="Person",
-        name="Alan Turing",
-        semantic_key="person_alan-turing",
-    )
-
-    assert node.label == "Person"
-    assert node.name == "Alan Turing"
-    assert node.semantic_key == "person_alan-turing"
-    assert node.properties == {}

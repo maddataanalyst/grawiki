@@ -7,7 +7,7 @@ from pathlib import Path
 
 from src.grawiki.core.commons import Chunk
 from src.grawiki.core.pipeline import GrawikiPipeline
-from src.grawiki.db.base import GraphDB, SearchMethod, SearchResults
+from src.grawiki.db.base import GraphDB, NodeHit, SearchMethod, SearchResults
 from src.grawiki.graph.models import KnowledgeGraph, Node
 
 
@@ -68,6 +68,20 @@ class FakeGraphDB(GraphDB):
     ) -> SearchResults:
         self.search_calls.append((query, method, limit, query_embedding))
         return {"__document__": [], "__chunk__": [], "__entity__": []}
+
+    async def ensure_indexes(self, *, labels, vector_dims=None) -> None:
+        return None
+
+    async def fulltext_search(self, *, labels, query_text, limit=10) -> list[NodeHit]:
+        return []
+
+    async def vector_search(
+        self, *, labels, query_embedding, limit=10
+    ) -> list[NodeHit]:
+        return []
+
+    async def neighbors(self, *, node_ids, rel_types=None, depth=1) -> list[Node]:
+        return []
 
 
 class ConcurrencyTrackingExtractor:

@@ -2,7 +2,6 @@
 
 import datetime
 from typing import Literal
-import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -77,72 +76,6 @@ class Node(GraphModel):
             "Optional vector embedding associated with the node, for example for retrieval purposes. "
             "The specific embedding model and dimensions are determined by application code."
         ),
-    )
-
-    @classmethod
-    def from_extracted_node(cls, extracted_node: "ExtractedNode") -> "Node":
-        """Create a graph node from an extracted node by assigning a machine identifier.
-
-        Parameters
-        ----------
-        extracted_node : ExtractedNode
-            Extracted node to convert.
-
-        Returns
-        -------
-        Node
-            Graph node with a machine-generated identifier.
-        """
-
-        return cls(
-            id=str(uuid.uuid4()),
-            label=extracted_node.label,
-            semantic_key=extracted_node.semantic_key,
-            name=extracted_node.name,
-            properties=dict(extracted_node.properties),
-        )
-
-
-class ExtractedNode(GraphModel):
-    """Extractor-facing node without a machine-generated identifier.
-
-    Parameters
-    ----------
-    label : str
-        Ontology type of the node, for example ``Person`` or ``Concept``.
-    name : str
-        Human-readable node name used as the temporary reference key within
-        one extraction result.
-    semantic_key: str
-        A key constructed as the concatenation of node label and shortened name, used to identify nodes with the same label
-        and name across the graph. Should be very short and brief. Example: person_alan-turing, code-snippet_llm-implementation.
-    properties : dict[str, str], optional
-        Short factual properties associated with the node.
-    """
-
-    label: str = Field(
-        description=(
-            "Ontology type or category of the node, such as 'Person', "
-            "'Organization', or 'Concept'."
-        )
-    )
-    name: str = Field(
-        description=(
-            "Human-readable node name used as the temporary reference key "
-            "within one extraction result."
-        )
-    )
-    semantic_key: str = Field(
-        description=(
-            "A key constructed as the concatenation of node label and shortened name, "
-            "used to identify nodes with the same label and name across the graph. "
-            "Should be very short and brief. Example: person_alan-turing, code-snippet_llm-implementation."
-        )
-    )
-
-    properties: dict[str, str] = Field(
-        default_factory=dict,
-        description="Short factual properties associated with the node.",
     )
 
 
@@ -324,39 +257,6 @@ class Relationship(GraphModel):
     )
 
 
-class ExtractedRelationship(GraphModel):
-    """Extractor-facing relationship using node names as endpoints.
-
-    Parameters
-    ----------
-    source : str
-        Source node name. It must match one extracted node name exactly.
-    target : str
-        Target node name. It must match one extracted node name exactly.
-    label : str
-        Relationship type expressed as a short verb-like connector.
-    properties : dict[str, str], optional
-        Short factual properties associated with the relationship.
-    """
-
-    source: str = Field(
-        description="Source node name matching one extracted node name exactly."
-    )
-    target: str = Field(
-        description="Target node name matching one extracted node name exactly."
-    )
-    label: str = Field(
-        description=(
-            "Relationship type expressed as a short verb-like connector "
-            "such as 'invented' or 'located_in'."
-        )
-    )
-    properties: dict[str, str] = Field(
-        default_factory=dict,
-        description="Short factual properties associated with the relationship.",
-    )
-
-
 class KnowledgeGraph(GraphModel):
     """Knowledge graph consisting of nodes and relationships.
 
@@ -371,20 +271,3 @@ class KnowledgeGraph(GraphModel):
 
     nodes: list[Node] = Field(default_factory=list)
     relationships: list[Relationship] = Field(default_factory=list)
-
-
-class ExtractedKnowledgeGraph(GraphModel):
-    """Extractor-facing graph before machine identifiers are assigned.
-
-    Parameters
-    ----------
-    nodes : list[ExtractedNode], optional
-        Nodes present in the extracted graph. Node names serve as temporary
-        reference keys within one extraction result.
-    relationships : list[ExtractedRelationship], optional
-        Relationships present in the extracted graph. Every endpoint should
-        reference an existing node name.
-    """
-
-    nodes: list[ExtractedNode] = Field(default_factory=list)
-    relationships: list[ExtractedRelationship] = Field(default_factory=list)

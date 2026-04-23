@@ -1,17 +1,147 @@
-"""Knowledge graph extraction helpers."""
+"""Knowledge graph extraction helpers.
+
+This module also defines the LLM-facing transient types
+(:class:`ExtractedNode`, :class:`ExtractedRelationship`,
+:class:`ExtractedKnowledgeGraph`). They live here rather than in
+:mod:`src.grawiki.graph.models` because they are an implementation detail
+of extraction — the persisted domain model (``Node`` / ``Relationship`` /
+``KnowledgeGraph``) does not reference them.
+"""
 
 import uuid
 
-from pydantic_ai import Agent, Embedder
+from pydantic import Field
+from pydantic_ai import Agent
+
 from src.grawiki.core.commons import Chunk
-from src.grawiki.graph.graph_prompts import KG_EXTRACTION_PROMPT
+from src.grawiki.core.embedding import Embedder
+from src.grawiki.graph.prompts import KG_EXTRACTION_PROMPT
 from src.grawiki.graph.models import (
-    ExtractedKnowledgeGraph,
-    ExtractedNode,
+    GraphModel,
     KnowledgeGraph,
     Node,
     Relationship,
 )
+
+
+class ExtractedNode(GraphModel):
+    """Extractor-facing node without a machine-generated identifier.
+
+    Parameters
+    ----------
+    label : str
+        Ontology type of the node, for example ``Person`` or ``Concept``.
+    name : str
+        Human-readable node name used as the temporary reference key within
+        one extraction result.
+    semantic_key: str
+        A key constructed as the concatenation of node label and shortened name, used to identify nodes with the same label
+        and name across the graph. Should be very short and brief. Example: person_alan-turing, code-snippet_llm-implementation.
+    properties : dict[str, str], optional
+        Short factual properties associated with the node.
+    """
+
+    label: str = Field(
+        description=(
+            "Ontology type or category of the node, such as 'Person', "
+            "'Organization', or 'Concept'."
+        )
+    )
+    name: str = Field(
+        description=(
+            "Human-readable node name used as the temporary reference key "
+            "within one extraction result."
+        )
+    )
+    semantic_key: str = Field(
+        description=(
+            "A key constructed as the concatenation of node label and shortened name, "
+            "used to identify nodes with the same label and name across the graph. "
+            "Should be very short and brief. Example: person_alan-turing, code-snippet_llm-implementation."
+        )
+    )
+    properties: dict[str, str] = Field(
+        default_factory=dict,
+        description="Short factual properties associated with the node.",
+    )
+
+
+class ExtractedRelationship(GraphModel):
+    """Extractor-facing relationship using node names as endpoints.
+
+    Parameters
+    ----------
+    source : str
+        Source node name. It must match one extracted node name exactly.
+    target : str
+        Target node name. It must match one extracted node name exactly.
+    label : str
+        Relationship type expressed as a short verb-like connector.
+    properties : dict[str, str], optional
+        Short factual properties associated with the relationship.
+    """
+
+    source: str = Field(
+        description="Source node name matching one extracted node name exactly."
+    )
+    target: str = Field(
+        description="Target node name matching one extracted node name exactly."
+    )
+    label: str = Field(
+        description=(
+            "Relationship type expressed as a short verb-like connector "
+            "such as 'invented' or 'located_in'."
+        )
+    )
+    properties: dict[str, str] = Field(
+        default_factory=dict,
+        description="Short factual properties associated with the relationship.",
+    )
+
+
+class ExtractedKnowledgeGraph(GraphModel):
+    """Extractor-facing graph before machine identifiers are assigned.
+
+    Parameters
+    ----------
+    nodes : list[ExtractedNode], optional
+        Nodes present in the extracted graph. Node names serve as temporary
+        reference keys within one extraction result.
+    relationships : list[ExtractedRelationship], optional
+        Relationships present in the extracted graph. Every endpoint should
+        reference an existing node name.
+    """
+
+    nodes: list[ExtractedNode] = Field(default_factory=list)
+    relationships: list[ExtractedRelationship] = Field(default_factory=list)
+
+
+def _node_from_extracted(extracted_node: ExtractedNode) -> Node:
+    """Promote an :class:`ExtractedNode` to a persisted :class:`Node`.
+
+    The extractor emits nodes referenced by name. Before persistence the
+    app assigns each node a durable UUID; this helper performs that
+    promotion in one place so the extractor is the only module that
+    knows how to cross the pre-id / post-id boundary.
+
+    Parameters
+    ----------
+    extracted_node : ExtractedNode
+        Extractor output node.
+
+    Returns
+    -------
+    Node
+        Persisted-shape node with a freshly assigned UUID.
+    """
+
+    return Node(
+        id=str(uuid.uuid4()),
+        label=extracted_node.label,
+        semantic_key=extracted_node.semantic_key,
+        name=extracted_node.name,
+        properties=dict(extracted_node.properties),
+    )
 
 
 class KnowledgeGraphExtractor:
@@ -21,8 +151,10 @@ class KnowledgeGraphExtractor:
     ----------
     model : str
         Chat model used for structured knowledge extraction.
-    embedding : str
-        Embedding model used for entity node vectors.
+    embedder : Embedder
+        Embedder used for entity node vectors. Injected so callers share
+        one embedding model across the pipeline instead of each component
+        constructing its own.
     prompt : str, optional
         Extraction prompt template.
     max_triplets : int, optional
@@ -43,7 +175,7 @@ class KnowledgeGraphExtractor:
     def __init__(
         self,
         model: str,
-        embedding: str,
+        embedder: Embedder,
         prompt: str = KG_EXTRACTION_PROMPT,
         max_triplets: int = 5,
         allowed_entity_types: list[str] | None = None,
@@ -62,7 +194,7 @@ class KnowledgeGraphExtractor:
             if allowed_relation_types
             else "",
         )
-        self.embedding = Embedder(embedding)
+        self.embedding = embedder
         self.agent = Agent(
             model=model,
             system_prompt=formatted_prompt,
@@ -152,9 +284,7 @@ class KnowledgeGraphExtractor:
         for extracted_node in graph.nodes:
             if extracted_node.name in nodes_by_name:
                 continue
-            nodes_by_name[extracted_node.name] = Node.from_extracted_node(
-                extracted_node
-            )
+            nodes_by_name[extracted_node.name] = _node_from_extracted(extracted_node)
 
         node_names = list(nodes_by_name)
         if node_names:

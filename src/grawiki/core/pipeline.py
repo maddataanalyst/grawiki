@@ -7,27 +7,16 @@ import logging
 from pathlib import Path
 from typing import Literal, Protocol
 
-from pydantic_ai import Embedder
-
 from src.grawiki.core.commons import Chunk, Document
+from src.grawiki.core.embedding import DefaultEmbedder, Embedder
 from src.grawiki.db.base import GraphDB, SearchMethod, SearchResults
 from src.grawiki.doc_processing.chunkers import Chunker
 from src.grawiki.doc_processing.document_processing import chunk_document, read_document
-from src.grawiki.graph.graph_extraction import KnowledgeGraphExtractor
+from src.grawiki.graph.extraction import KnowledgeGraphExtractor
 from src.grawiki.graph.models import ChunkNode, DocumentNode, KnowledgeGraph
 
 
 logger = logging.getLogger(__name__)
-
-
-class EmbedderProtocol(Protocol):
-    """Protocol for embedding providers used by the pipeline."""
-
-    async def embed_documents(self, documents: str | list[str]):
-        """Embed one or more document-like strings."""
-
-    async def embed_query(self, query: str | list[str]):
-        """Embed one or more query strings."""
 
 
 class KnowledgeGraphExtractorProtocol(Protocol):
@@ -57,8 +46,11 @@ class GrawikiPipeline:
         Chunking strategy passed to :class:`src.grawiki.doc_processing.chunkers.Chunker`.
     max_workers : int, optional
         Maximum number of chunk-level extraction coroutines to run in parallel.
-    embedder : EmbedderProtocol | None, optional
-        Optional embedder override used for tests or debugging.
+    embedder : Embedder | None, optional
+        Optional embedder override used for tests or debugging. When omitted,
+        a :class:`DefaultEmbedder` is constructed from ``embedding_model`` and
+        shared with the knowledge graph extractor so only one embedding model
+        is loaded per pipeline.
     kg_extractor : KnowledgeGraphExtractorProtocol | None, optional
         Optional knowledge graph extractor override used for tests or debugging.
     """
@@ -72,7 +64,7 @@ class GrawikiPipeline:
             "fast", "recursive", "semantic", "sentence", "token"
         ] = "sentence",
         max_workers: int = 4,
-        embedder: EmbedderProtocol | None = None,
+        embedder: Embedder | None = None,
         kg_extractor: KnowledgeGraphExtractorProtocol | None = None,
     ) -> None:
         self.model = model
@@ -81,10 +73,10 @@ class GrawikiPipeline:
         self.chunking_strategy = chunking_strategy
         self.max_workers = max_workers
         self.chunker = Chunker(strategy=chunking_strategy)
-        self.embedding = embedder or Embedder(embedding_model)
+        self.embedding: Embedder = embedder or DefaultEmbedder(embedding_model)
         self.kg_extractor = kg_extractor or KnowledgeGraphExtractor(
             model=model,
-            embedding=embedding_model,
+            embedder=self.embedding,
         )
 
     async def setup_db(
