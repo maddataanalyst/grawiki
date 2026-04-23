@@ -213,3 +213,6 @@ __marimo__/
 *.db.settings
 *.sqlite
 *.sqlite3
+
+# Git worktrees
+.worktrees/
