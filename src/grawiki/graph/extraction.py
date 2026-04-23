@@ -12,9 +12,10 @@ import uuid
 
 from pydantic import Field
 from pydantic_ai import Agent
+from typing import Protocol
 
 from src.grawiki.core.commons import Chunk
-from src.grawiki.core.embedding import Embedder
+from src.grawiki.core.embedding import Embedding
 from src.grawiki.graph.prompts import KG_EXTRACTION_PROMPT
 from src.grawiki.graph.models import (
     GraphModel,
@@ -22,6 +23,13 @@ from src.grawiki.graph.models import (
     Node,
     Relationship,
 )
+
+
+class KnowledgeGraphExtractorProtocol(Protocol):
+    """Protocol for chunk-level knowledge graph extractors."""
+
+    async def extract(self, chunk: Chunk) -> KnowledgeGraph:
+        """Extract a graph for a single chunk."""
 
 
 class ExtractedNode(GraphModel):
@@ -151,8 +159,8 @@ class KnowledgeGraphExtractor:
     ----------
     model : str
         Chat model used for structured knowledge extraction.
-    embedder : Embedder
-        Embedder used for entity node vectors. Injected so callers share
+    embedder : Embedding
+        Embedding used for entity node vectors. Injected so callers share
         one embedding model across the pipeline instead of each component
         constructing its own.
     prompt : str, optional
@@ -175,7 +183,7 @@ class KnowledgeGraphExtractor:
     def __init__(
         self,
         model: str,
-        embedder: Embedder,
+        embedding: Embedding,
         prompt: str = KG_EXTRACTION_PROMPT,
         max_triplets: int = 5,
         allowed_entity_types: list[str] | None = None,
@@ -194,7 +202,7 @@ class KnowledgeGraphExtractor:
             if allowed_relation_types
             else "",
         )
-        self.embedding = embedder
+        self.embedding = embedding
         self.agent = Agent(
             model=model,
             system_prompt=formatted_prompt,

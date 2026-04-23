@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.grawiki.core.embedding import Embedder
+from src.grawiki.core.embedding import Embedding
 from src.grawiki.db.base import GraphDB, NodeHit
 from src.grawiki.graph.models import Node
 
@@ -18,14 +18,14 @@ class Retriever:
     ----------
     db : GraphDB
         Storage engine adapter used for raw search primitives.
-    embedder : Embedder
+    embedder : Embedding
         Shared embedder instance. The same instance should be reused by
         the ingestion path to avoid loading the model twice.
     """
 
-    def __init__(self, db: GraphDB, embedder: Embedder) -> None:
+    def __init__(self, db: GraphDB, embedding: Embedding) -> None:
         self.db = db
-        self.embedder = embedder
+        self.embedding = embedding
 
     async def fulltext(
         self,
@@ -68,7 +68,7 @@ class Retriever:
         Parameters
         ----------
         query : str
-            Raw query text. The retriever embeds it using :attr:`embedder`.
+            Raw query text. The retriever embeds it using :attr:`embedding`.
         labels : list[str]
             Node labels to search.
         limit : int, optional
@@ -82,12 +82,12 @@ class Retriever:
         Raises
         ------
         ValueError
-            Raised when the embedder returns an empty result.
+            Raised when the embedding returns an empty result.
         """
 
-        result = await self.embedder.embed_query(query)
+        result = await self.embedding.embed_query(query)
         if not result.embeddings:
-            raise ValueError("Embedder returned an empty result for query.")
+            raise ValueError("Embedding returned an empty result for query.")
         embedding = list(result.embeddings[0])
         hits = await self.db.vector_search(
             labels=labels, query_embedding=embedding, limit=limit

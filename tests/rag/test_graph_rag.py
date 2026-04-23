@@ -132,7 +132,7 @@ def test_graph_rag_step_methods_and_ingest(tmp_path: Path) -> None:
         embedding_model="test-embedding",
         db=graph_db,
         max_workers=2,
-        embedder=FakeEmbedder(),
+        embedding=FakeEmbedder(),
         kg_extractor=ConcurrencyTrackingExtractor(),
     )
 
@@ -142,8 +142,8 @@ def test_graph_rag_step_methods_and_ingest(tmp_path: Path) -> None:
     chunk_embeddings = asyncio.run(rag.embed_chunks(chunks))
     document_node = rag.build_document_node(document, document_embedding)
     chunk_nodes = rag.build_chunk_nodes(chunks, chunk_embeddings)
-    asyncio.run(rag.persist_documents_and_chunks(document_node, chunk_nodes))
-    chunk_graphs = asyncio.run(rag.extract_chunk_graphs(chunks))
+    asyncio.run(rag.persist_document_and_chunks(document_node, chunk_nodes))
+    chunk_graphs = asyncio.run(rag.extract_kg_per_chunk(chunks))
     asyncio.run(rag.persist_entities_and_relationships(chunks, chunk_graphs))
 
     assert document_node.embedding == document_embedding
@@ -160,7 +160,7 @@ def test_graph_rag_step_methods_and_ingest(tmp_path: Path) -> None:
         embedding_model="test-embedding",
         db=graph_db,
         max_workers=2,
-        embedder=FakeEmbedder(),
+        embedding=FakeEmbedder(),
         kg_extractor=extractor,
     )
     asyncio.run(rag.ingest(input_path))
@@ -182,7 +182,7 @@ def test_graph_rag_search_uses_retriever_primitives() -> None:
         model="test-model",
         embedding_model="test-embedding",
         db=graph_db,
-        embedder=FakeEmbedder(),
+        embedding=FakeEmbedder(),
         kg_extractor=ConcurrencyTrackingExtractor(),
     )
 

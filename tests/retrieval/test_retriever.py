@@ -55,19 +55,33 @@ class FakeGraphDB(GraphDB):
     async def setup(self, embedding_dimensions=None) -> None:
         pass
 
-    async def ensure_indexes(self, *, labels: Iterable[str], vector_dims: Mapping[str, int] | None = None) -> None:
+    async def ensure_indexes(
+        self, *, labels: Iterable[str], vector_dims: Mapping[str, int] | None = None
+    ) -> None:
         pass
 
-    async def fulltext_search(self, *, labels: Sequence[str], query_text: str, limit: int = 10) -> list[NodeHit]:
+    async def fulltext_search(
+        self, *, labels: Sequence[str], query_text: str, limit: int = 10
+    ) -> list[NodeHit]:
         self.fulltext_calls.append((list(labels), query_text, limit))
         return list(self._fulltext_hits)
 
-    async def vector_search(self, *, labels: Sequence[str], query_embedding: list[float], limit: int = 10) -> list[NodeHit]:
+    async def vector_search(
+        self, *, labels: Sequence[str], query_embedding: list[float], limit: int = 10
+    ) -> list[NodeHit]:
         self.vector_calls.append((list(labels), list(query_embedding), limit))
         return list(self._vector_hits)
 
-    async def neighbors(self, *, node_ids: Sequence[str], rel_types: Sequence[str] | None = None, depth: int = 1) -> list[Node]:
-        self.neighbor_calls.append((list(node_ids), list(rel_types) if rel_types else None, depth))
+    async def neighbors(
+        self,
+        *,
+        node_ids: Sequence[str],
+        rel_types: Sequence[str] | None = None,
+        depth: int = 1,
+    ) -> list[Node]:
+        self.neighbor_calls.append(
+            (list(node_ids), list(rel_types) if rel_types else None, depth)
+        )
         return list(self._neighbor_nodes)
 
     async def upsert_nodes(self, nodes: Sequence[Node]) -> None:
@@ -87,7 +101,7 @@ def test_fulltext_delegates_to_db_and_deduplicates() -> None:
 
     node = _make_node("n1")
     db = FakeGraphDB(fulltext_hits=[NodeHit(node=node), NodeHit(node=node)])
-    retriever = Retriever(db=db, embedder=FakeEmbedder())
+    retriever = Retriever(db=db, embedding=FakeEmbedder())
 
     hits = asyncio.run(retriever.fulltext("hello", labels=["__chunk__"], limit=5))
 
@@ -100,7 +114,7 @@ def test_fulltext_passes_labels_and_limit() -> None:
     """fulltext() should forward labels and limit unchanged."""
 
     db = FakeGraphDB()
-    retriever = Retriever(db=db, embedder=FakeEmbedder())
+    retriever = Retriever(db=db, embedding=FakeEmbedder())
 
     asyncio.run(retriever.fulltext("q", labels=["__document__", "__entity__"], limit=3))
 
@@ -117,7 +131,7 @@ def test_vector_embeds_query_before_calling_db() -> None:
     """vector() should embed the query and pass the vector to db.vector_search."""
 
     db = FakeGraphDB()
-    retriever = Retriever(db=db, embedder=FakeEmbedder())
+    retriever = Retriever(db=db, embedding=FakeEmbedder())
 
     asyncio.run(retriever.vector("hi", labels=["__chunk__"], limit=7))
 
@@ -132,8 +146,10 @@ def test_vector_deduplicates_results() -> None:
     """vector() should deduplicate hits returned by the DB."""
 
     node = _make_node("n2")
-    db = FakeGraphDB(vector_hits=[NodeHit(node=node, score=0.9), NodeHit(node=node, score=0.8)])
-    retriever = Retriever(db=db, embedder=FakeEmbedder())
+    db = FakeGraphDB(
+        vector_hits=[NodeHit(node=node, score=0.9), NodeHit(node=node, score=0.8)]
+    )
+    retriever = Retriever(db=db, embedding=FakeEmbedder())
 
     hits = asyncio.run(retriever.vector("q", labels=["__chunk__"]))
 
@@ -155,9 +171,11 @@ def test_expand_calls_neighbors_with_seed_ids() -> None:
         NodeHit(node=_make_node("s1")),
         NodeHit(node=_make_node("s2")),
     ]
-    retriever = Retriever(db=db, embedder=FakeEmbedder())
+    retriever = Retriever(db=db, embedding=FakeEmbedder())
 
-    nodes = asyncio.run(retriever.expand(seed_hits, rel_types=["__mentions__"], depth=2))
+    nodes = asyncio.run(
+        retriever.expand(seed_hits, rel_types=["__mentions__"], depth=2)
+    )
 
     assert len(db.neighbor_calls) == 1
     ids, rel_types, depth = db.neighbor_calls[0]
@@ -171,7 +189,7 @@ def test_expand_returns_empty_for_no_seeds() -> None:
     """expand() should short-circuit and return [] when seeds is empty."""
 
     db = FakeGraphDB()
-    retriever = Retriever(db=db, embedder=FakeEmbedder())
+    retriever = Retriever(db=db, embedding=FakeEmbedder())
 
     nodes = asyncio.run(retriever.expand([]))
 

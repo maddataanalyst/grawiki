@@ -101,6 +101,18 @@ class FalkorGraphDB(GraphDB):
         self._fulltext_indexes_ready = False
         self._vector_index_dimensions: dict[str, int] = {}
 
+    def close(self) -> None:
+        """Close the embedded FalkorDB instance.
+
+        Notes
+        -----
+        FalkorDBLite runs an embedded Redis process underneath the adapter.
+        Tests should call this explicitly during teardown instead of relying on
+        redislite's ``atexit`` cleanup hook.
+        """
+
+        self._db.close()
+
     async def setup(self, embedding_dimensions: dict[str, int] | None = None) -> None:
         """Prepare FalkorDB indexes used by the application.
 

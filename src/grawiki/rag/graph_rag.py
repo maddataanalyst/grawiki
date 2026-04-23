@@ -6,26 +6,24 @@ import asyncio
 import logging
 import uuid
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal
+
+from pydantic_ai import Embedder
 
 from src.grawiki.core.commons import Chunk, Document
-from src.grawiki.core.embedding import DefaultEmbedder, Embedder
+from src.grawiki.core.embedding import Embedding
 from src.grawiki.db.base import GraphDB, NodeHit
 from src.grawiki.doc_processing.chunkers import Chunker
 from src.grawiki.doc_processing.document_processing import chunk_document, read_document
-from src.grawiki.graph.extraction import KnowledgeGraphExtractor
+from src.grawiki.graph.extraction import (
+    KnowledgeGraphExtractor,
+    KnowledgeGraphExtractorProtocol,
+)
 from src.grawiki.graph.models import ChunkNode, DocumentNode, KnowledgeGraph
 from src.grawiki.retrieval.retriever import Retriever
 
 
 logger = logging.getLogger(__name__)
-
-
-class KnowledgeGraphExtractorProtocol(Protocol):
-    """Protocol for chunk-level knowledge graph extractors."""
-
-    async def extract(self, chunk: Chunk) -> KnowledgeGraph:
-        """Extract a graph for a single chunk."""
 
 
 _DEFAULT_SEARCH_LABELS = ["__document__", "__chunk__", "__entity__"]
@@ -46,8 +44,8 @@ class GraphRAG:
         Chunking strategy passed to :class:`~src.grawiki.doc_processing.chunkers.Chunker`.
     max_workers : int, optional
         Maximum number of concurrent chunk-level extraction coroutines.
-    embedder : Embedder | None, optional
-        Embedder override for tests or debugging.
+    embedder : Embedding | None, optional
+        Embedding override for tests or debugging.
     kg_extractor : KnowledgeGraphExtractorProtocol | None, optional
         Knowledge graph extractor override for tests or debugging.
     """
@@ -62,7 +60,7 @@ class GraphRAG:
             "fast", "recursive", "semantic", "sentence", "token"
         ] = "sentence",
         max_workers: int = 4,
-        embedder: Embedder | None = None,
+        embedding: Embedding | None = None,
         kg_extractor: KnowledgeGraphExtractorProtocol | None = None,
     ) -> None:
         self.model = model
@@ -72,12 +70,12 @@ class GraphRAG:
         self._db = db
         self._chunker = Chunker(strategy=chunking_strategy)
         self._max_workers = max_workers
-        self._embedder = embedder or DefaultEmbedder(embedding_model)
+        self._embedding = embedding or Embedder(embedding_model)
         self._extractor = kg_extractor or KnowledgeGraphExtractor(
             model=model,
-            embedder=self._embedder,
+            embedding=self._embedding,
         )
-        self._retriever = Retriever(db=db, embedder=self._embedder)
+        self._retriever = Retriever(db=db, embedding=self._embedding)
 
     # ------------------------------------------------------------------
     # Public step methods (useful for notebooks and debugging)
@@ -101,7 +99,7 @@ class GraphRAG:
         """Embed one document's content."""
 
         logger.info("Embedding document %s", document.id)
-        result = await self._embedder.embed_documents([document.content])
+        result = await self._embedding.embed_documents([document.content])
         return list(result.embeddings[0])
 
     async def embed_chunks(self, chunks: list[Chunk]) -> list[list[float]]:
@@ -110,7 +108,7 @@ class GraphRAG:
         if not chunks:
             return []
         logger.info("Embedding %s chunks", len(chunks))
-        result = await self._embedder.embed_documents(
+        result = await self._embedding.embed_documents(
             [chunk.content for chunk in chunks]
         )
         return [list(e) for e in result.embeddings]
@@ -136,7 +134,7 @@ class GraphRAG:
             cn.embedding = emb
         return chunk_nodes
 
-    async def persist_documents_and_chunks(
+    async def persist_document_and_chunks(
         self,
         document_node: DocumentNode,
         chunk_nodes: list[ChunkNode],
@@ -155,7 +153,7 @@ class GraphRAG:
         await self._db.setup(embedding_dimensions=dims or None)
         await self._db.save_docs_and_chunks_to_db([document_node], chunk_nodes)
 
-    async def extract_chunk_graphs(
+    async def extract_kg_per_chunk(
         self, chunks: list[Chunk]
     ) -> dict[str, KnowledgeGraph]:
         """Extract knowledge graphs for chunks with bounded concurrency."""
@@ -222,8 +220,8 @@ class GraphRAG:
         chunk_embeddings = await self.embed_chunks(chunks)
         document_node = self.build_document_node(document, document_embedding)
         chunk_nodes = self.build_chunk_nodes(chunks, chunk_embeddings)
-        await self.persist_documents_and_chunks(document_node, chunk_nodes)
-        chunk_graphs = await self.extract_chunk_graphs(chunks)
+        await self.persist_document_and_chunks(document_node, chunk_nodes)
+        chunk_graphs = await self.extract_kg_per_chunk(chunks)
         await self.persist_entities_and_relationships(chunks, chunk_graphs)
         logger.info("Completed ingestion for %s", path)
 
@@ -246,8 +244,8 @@ class GraphRAG:
         chunk_embeddings = await self.embed_chunks(chunks)
         document_node = self.build_document_node(document, document_embedding)
         chunk_nodes = self.build_chunk_nodes(chunks, chunk_embeddings)
-        await self.persist_documents_and_chunks(document_node, chunk_nodes)
-        chunk_graphs = await self.extract_chunk_graphs(chunks)
+        await self.persist_document_and_chunks(document_node, chunk_nodes)
+        chunk_graphs = await self.extract_kg_per_chunk(chunks)
         await self.persist_entities_and_relationships(chunks, chunk_graphs)
         logger.info("Completed ingestion for text document %r", title)
 

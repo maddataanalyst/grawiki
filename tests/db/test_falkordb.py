@@ -20,13 +20,17 @@ from src.grawiki.graph.models import (
 def graph_db(tmp_path):
     """Create an isolated FalkorDBLite-backed graph for each test."""
 
-    return FalkorGraphDB(
+    graph = FalkorGraphDB(
         tmp_path / "graph.db",
         "test_graph",
         vector_index_m=32,
         vector_index_ef_construction=200,
         vector_index_ef_runtime=10,
     )
+    try:
+        yield graph
+    finally:
+        graph.close()
 
 
 def _index_rows_by_key(rows: list[list[object]]) -> dict[tuple[str, str], list[object]]:

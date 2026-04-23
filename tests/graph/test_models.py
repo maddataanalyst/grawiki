@@ -57,5 +57,3 @@ def test_memory_node_still_uses_base_node_contract() -> None:
     assert node.name == "Tooling preference"
     assert node.semantic_key == "memory_tooling_preference"
     assert node.content == "Use uv for package management."
-
-
