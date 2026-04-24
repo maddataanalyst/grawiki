@@ -416,6 +416,35 @@ class StaticExtractor:
         return self._graph
 
 
+class _CallCountingFinder:
+    """Test-only proxy that records every search() call made against an EntitySimilarityFinder."""
+
+    def __init__(self, inner: EntitySimilarityFinder) -> None:
+        self._inner = inner
+        self.search_calls: list[Node] = []
+
+    async def search(
+        self,
+        entity: Node,
+        *,
+        limit: int = 10,
+        threshold: float | None = None,
+        same_label_only: bool = True,
+        candidates: list[Node] | None = None,
+    ) -> list:
+        self.search_calls.append(entity)
+        return await self._inner.search(
+            entity,
+            limit=limit,
+            threshold=threshold,
+            same_label_only=same_label_only,
+            candidates=candidates,
+        )
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+
 def test_graph_rag_resolves_entities_on_ingest_when_enabled() -> None:
     """When resolve_entities_on_ingest=True, extracted nodes matching a persisted
     node above the threshold should be swapped for the persisted node before
@@ -620,3 +649,174 @@ def test_graph_rag_exposes_combined_duplicate_candidate_report() -> None:
     ] == ["person_alan-turing"]
     assert [result.source.id for result in report.similarity_candidates] == ["entity_3"]
     assert [hit.node.id for hit in report.similarity_candidates[0].hits] == ["entity_4"]
+
+
+def test_resolve_extracted_entities_searches_each_unique_id_once() -> None:
+    """When the same extracted entity appears in two chunks, the similarity
+    search should be issued exactly once (de-duplication by entity id).
+    """
+
+    persisted_node = Node(
+        id="persisted-1",
+        label="Concept",
+        semantic_key="concept_react",
+        name="ReAct",
+        embedding=[0.1, 0.2, 0.3],
+    )
+    # Extracted node is the same object in both chunks — same id, nearly
+    # identical embedding so cosine similarity ≈ 0.99998 > 0.9 threshold.
+    extracted = Node(
+        id="extracted-1",
+        label="Concept",
+        semantic_key="concept_react-agents",
+        name="ReAct agents",
+        embedding=[0.1, 0.2, 0.31],
+    )
+
+    fake_db = FakeGraphDB()
+    fake_db.entities = [persisted_node]
+
+    inner_finder = EntitySimilarityFinder(db=fake_db)
+    counting_finder = _CallCountingFinder(inner_finder)
+
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=fake_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(KnowledgeGraph(nodes=[extracted], relationships=[])),
+        retrievers=(StaticRetriever([]),),
+        similarity_finder=counting_finder,
+        resolve_entities_on_ingest=True,
+        entity_resolution_threshold=0.9,
+    )
+
+    # Directly call the private method with two chunks that share the same
+    # extracted entity.  This sidesteps the need to produce exactly two chunks
+    # from ingest_text and lets the test focus on the de-duplication logic.
+    chunk_graphs = {
+        "chunk-a": KnowledgeGraph(nodes=[extracted], relationships=[]),
+        "chunk-b": KnowledgeGraph(nodes=[extracted], relationships=[]),
+    }
+    rewritten = asyncio.run(rag._resolve_extracted_entities(chunk_graphs))
+
+    # One search call, not two — the implementation deduplicates by entity id.
+    assert len(counting_finder.search_calls) == 1, (
+        f"Expected exactly 1 similarity search, got {len(counting_finder.search_calls)}"
+    )
+
+    # Both chunks should have the extracted id replaced by the persisted id.
+    for chunk_id, graph in rewritten.items():
+        node_ids = {n.id for n in graph.nodes}
+        assert "extracted-1" not in node_ids, (
+            f"chunk '{chunk_id}': extracted-1 should have been replaced"
+        )
+        assert "persisted-1" in node_ids, (
+            f"chunk '{chunk_id}': persisted-1 should appear after rewrite"
+        )
+
+
+def test_resolve_extracted_entities_rewrites_relationship_endpoints() -> None:
+    """Relationship source/target pointing at a resolved entity must be rewritten
+    to the persisted id.  Endpoints pointing at an unresolved entity stay as-is.
+    """
+
+    persisted_node = Node(
+        id="persisted-1",
+        label="Concept",
+        semantic_key="concept_react",
+        name="ReAct",
+        embedding=[0.1, 0.2, 0.3],
+    )
+    # This extracted node is close enough to be resolved (cosine ≈ 0.99998).
+    resolved_extracted = Node(
+        id="extracted-resolved",
+        label="Concept",
+        semantic_key="concept_react-agents",
+        name="ReAct agents",
+        embedding=[0.1, 0.2, 0.31],
+    )
+    # This extracted node has an orthogonal embedding — it will not match any
+    # persisted node so it should be left untouched.
+    unresolved_extracted = Node(
+        id="extracted-unresolved",
+        label="Concept",
+        semantic_key="concept_other",
+        name="Something else entirely",
+        embedding=[0.0, 0.0, 1.0],
+    )
+
+    fake_db = FakeGraphDB()
+    fake_db.entities = [persisted_node]
+
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=fake_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(
+            KnowledgeGraph(nodes=[resolved_extracted], relationships=[])
+        ),
+        retrievers=(StaticRetriever([]),),
+        resolve_entities_on_ingest=True,
+        entity_resolution_threshold=0.9,
+    )
+
+    # chunk-a: has a relationship whose source is the resolved entity.
+    # chunk-b: contains only the unresolved entity, no relationships.
+    chunk_graphs = {
+        "chunk-a": KnowledgeGraph(
+            nodes=[resolved_extracted],
+            relationships=[
+                Relationship(
+                    id="rel-1",
+                    source="extracted-resolved",
+                    target="extracted-resolved",
+                    label="RELATED_TO",
+                    properties={},
+                )
+            ],
+        ),
+        "chunk-b": KnowledgeGraph(
+            nodes=[unresolved_extracted],
+            relationships=[
+                Relationship(
+                    id="rel-2",
+                    source="extracted-unresolved",
+                    target="extracted-unresolved",
+                    label="RELATED_TO",
+                    properties={},
+                )
+            ],
+        ),
+    }
+    rewritten = asyncio.run(rag._resolve_extracted_entities(chunk_graphs))
+
+    # chunk-a: resolved entity's id must appear in nodes and in both rel endpoints.
+    chunk_a = rewritten["chunk-a"]
+    chunk_a_node_ids = {n.id for n in chunk_a.nodes}
+    assert "persisted-1" in chunk_a_node_ids, (
+        "chunk-a: resolved node should carry persisted-1"
+    )
+    assert "extracted-resolved" not in chunk_a_node_ids, (
+        "chunk-a: extracted-resolved should be gone after rewrite"
+    )
+    assert chunk_a.relationships[0].source == "persisted-1", (
+        "chunk-a relationship source should be rewritten to persisted-1"
+    )
+    assert chunk_a.relationships[0].target == "persisted-1", (
+        "chunk-a relationship target should be rewritten to persisted-1"
+    )
+
+    # chunk-b: unresolved entity and its relationship endpoints must be untouched.
+    chunk_b = rewritten["chunk-b"]
+    chunk_b_node_ids = {n.id for n in chunk_b.nodes}
+    assert "extracted-unresolved" in chunk_b_node_ids, (
+        "chunk-b: unresolved node should be preserved as-is"
+    )
+    assert chunk_b.relationships[0].source == "extracted-unresolved", (
+        "chunk-b relationship source should remain extracted-unresolved"
+    )
+    assert chunk_b.relationships[0].target == "extracted-unresolved", (
+        "chunk-b relationship target should remain extracted-unresolved"
+    )
