@@ -1,13 +1,15 @@
 """Retrieval strategy layer — owns the embedder on the query path."""
 
 from __future__ import annotations
+from typing_extensions import Literal
 
-from src.grawiki.core.embedding import Embedding
-from src.grawiki.db.base import GraphDB, NodeHit
-from src.grawiki.graph.models import Node
+from grawiki.core.embedding import Embedding
+from grawiki.db.base import GraphDB, NodeHit
+from grawiki.graph.models import Node
+from grawiki.retrieval.base import Retriever
 
 
-class Retriever:
+class TextRetriever(Retriever):
     """Embed queries, call DB primitives, and compose results.
 
     The retriever is the single place where query-side embedding happens.
@@ -23,9 +25,47 @@ class Retriever:
         the ingestion path to avoid loading the model twice.
     """
 
-    def __init__(self, db: GraphDB, embedding: Embedding) -> None:
+    def __init__(
+        self,
+        db: GraphDB,
+        embedding: Embedding,
+        search_method: Literal["vector", "fulltext"] = "vector",
+        search_labels: list[str] = ["__chunk__"],
+    ) -> None:
         self.db = db
         self.embedding = embedding
+        self.search_method = search_method
+        self.search_labels = search_labels
+
+    async def retrieve(
+        self, query: str, limit: int = 5, *args, **kwargs
+    ) -> list[NodeHit]:
+        """Run a retrieval query and return a list of hits.
+
+        Parameters
+        ----------
+        query : str
+            Raw query text.
+        limit : int | None, optional
+            Maximum hits per label. Overrides the default limit if provided.
+
+        Returns
+        -------
+        list[NodeHit]
+            Flat, deduplicated hit list across all requested labels.
+        """
+
+        effective_limit = limit if limit is not None else self.limit
+        if self.search_method == "vector":
+            return await self.vector(
+                query=query, labels=self.search_labels, limit=effective_limit
+            )
+        elif self.search_method == "fulltext":
+            return await self.fulltext(
+                query=query, labels=self.search_labels, limit=effective_limit
+            )
+        else:
+            raise ValueError(f"Unsupported search method: {self.search_method}")
 
     async def fulltext(
         self,
@@ -77,7 +117,8 @@ class Retriever:
         Returns
         -------
         list[NodeHit]
-            Flat, deduplicated hit list sorted by score ascending.
+            Flat, deduplicated hit list with higher scores representing more
+            relevant matches.
 
         Raises
         ------

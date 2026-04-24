@@ -9,7 +9,7 @@ from chonkie import (
     TokenChunker,
 )
 
-from src.grawiki.core.commons import Chunk, Document
+from grawiki.core.commons import Chunk, Document
 
 # TODO: later add support for markdown processing via Chonkie MarkdownChef
 

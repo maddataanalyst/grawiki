@@ -3,7 +3,7 @@
 This module also defines the LLM-facing transient types
 (:class:`ExtractedNode`, :class:`ExtractedRelationship`,
 :class:`ExtractedKnowledgeGraph`). They live here rather than in
-:mod:`src.grawiki.graph.models` because they are an implementation detail
+:mod:`grawiki.graph.models` because they are an implementation detail
 of extraction — the persisted domain model (``Node`` / ``Relationship`` /
 ``KnowledgeGraph``) does not reference them.
 """
@@ -14,10 +14,10 @@ from pydantic import Field
 from pydantic_ai import Agent
 from typing import Protocol
 
-from src.grawiki.core.commons import Chunk
-from src.grawiki.core.embedding import Embedding
-from src.grawiki.graph.prompts import KG_EXTRACTION_PROMPT
-from src.grawiki.graph.models import (
+from grawiki.core.commons import Chunk
+from grawiki.core.embedding import Embedding
+from grawiki.graph.prompts import KG_EXTRACTION_PROMPT
+from grawiki.graph.models import (
     GraphModel,
     KnowledgeGraph,
     Node,

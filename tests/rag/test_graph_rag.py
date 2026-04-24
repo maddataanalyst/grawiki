@@ -6,10 +6,11 @@ import asyncio
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-from src.grawiki.core.commons import Chunk
-from src.grawiki.db.base import GraphDB, NodeHit
-from src.grawiki.graph.models import KnowledgeGraph, Node, Relationship
-from src.grawiki.rag.graph_rag import GraphRAG
+from grawiki.core.commons import Chunk
+from grawiki.db.base import GraphDB, NodeHit
+from grawiki.graph.models import KnowledgeGraph, Node, Relationship
+from grawiki.rag.graph_rag import GraphRAG
+from grawiki.retrieval.text import TextRetriever
 
 
 class FakeEmbeddingResult:
@@ -125,6 +126,7 @@ def test_graph_rag_step_methods_and_ingest(tmp_path: Path) -> None:
     input_path.write_text(
         "Alan Turing inspired graph memory.\nGraphs connect chunks.\n"
     )
+    search_labels = ["__chunk__", "__entity__"]
 
     graph_db = FakeGraphDB()
     rag = GraphRAG(
@@ -134,6 +136,14 @@ def test_graph_rag_step_methods_and_ingest(tmp_path: Path) -> None:
         max_workers=2,
         embedding=FakeEmbedder(),
         kg_extractor=ConcurrencyTrackingExtractor(),
+        retrievers=(
+            TextRetriever(
+                db=graph_db,
+                embedding=FakeEmbedder(),
+                search_method="vector",
+                search_labels=search_labels,
+            ),
+        ),
     )
 
     document = rag.read_document(input_path)
@@ -162,6 +172,14 @@ def test_graph_rag_step_methods_and_ingest(tmp_path: Path) -> None:
         max_workers=2,
         embedding=FakeEmbedder(),
         kg_extractor=extractor,
+        retrievers=(
+            TextRetriever(
+                db=graph_db,
+                embedding=FakeEmbedder(),
+                search_method="vector",
+                search_labels=search_labels,
+            ),
+        ),
     )
     asyncio.run(rag.ingest(input_path))
 
@@ -174,23 +192,36 @@ def test_graph_rag_step_methods_and_ingest(tmp_path: Path) -> None:
     assert extractor.maximum <= 2
 
 
-def test_graph_rag_search_uses_retriever_primitives() -> None:
-    """GraphRAG.search should delegate to db.fulltext_search / db.vector_search."""
+def test_graph_rag_search_uses_configured_retrievers() -> None:
+    """GraphRAG.search should delegate through the configured retrievers."""
 
     graph_db = FakeGraphDB()
+    labels = ["__chunk__", "__entity__"]
     rag = GraphRAG(
         model="test-model",
         embedding_model="test-embedding",
         db=graph_db,
         embedding=FakeEmbedder(),
         kg_extractor=ConcurrencyTrackingExtractor(),
+        retrievers=(
+            TextRetriever(
+                db=graph_db,
+                embedding=FakeEmbedder(),
+                search_method="fulltext",
+                search_labels=labels,
+            ),
+            TextRetriever(
+                db=graph_db,
+                embedding=FakeEmbedder(),
+                search_method="vector",
+                search_labels=labels,
+            ),
+        ),
     )
 
-    asyncio.run(rag.search("Turing", method="fulltext", limit=3))
-    asyncio.run(rag.search("machine intelligence", method="vector", limit=5))
+    asyncio.run(rag.search("machine intelligence", limit=5))
 
-    labels = ["__document__", "__chunk__", "__entity__"]
-    assert graph_db.fulltext_calls[0] == (labels, "Turing", 3)
+    assert graph_db.fulltext_calls[0] == (labels, "machine intelligence", 5)
     assert graph_db.vector_calls[0] == (
         labels,
         [42.0, float(len("machine intelligence")), 7.0],

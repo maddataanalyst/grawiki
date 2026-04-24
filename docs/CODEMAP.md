@@ -25,8 +25,9 @@ Main application package. This is where the reusable project code lives.
 
 ### `tests/`
 
-Pytest suite covering `GraphRAG` behavior, the retrieval layer, graph
-models and extraction, Cypher query generation, and the FalkorDB adapter.
+Pytest suite covering `GraphRAG` behavior, the modular ingestion-step API,
+the retrieval layer, graph models and extraction, Cypher query generation,
+and the FalkorDB adapter.
 
 ### `notebooks/`
 
@@ -76,13 +77,15 @@ These models are the bridge between file reading/chunking and graph persistence.
 
 #### `src/grawiki/core/embedding.py`
 
-Shared embedding contract and default implementation.
+Shared embedding contract.
 
 Key responsibilities:
 
-- Defines the `Embedder` protocol used across ingestion, extraction, and retrieval.
-- Provides `DefaultEmbedder`, the `pydantic_ai.Embedder` wrapper used by default.
-- Lets `GraphRAG`, `KnowledgeGraphExtractor`, and `Retriever` share one embedder instance.
+- Defines the `Embedding` protocol used across ingestion, extraction, and retrieval.
+- Documents the async `embed_documents(...)` and `embed_query(...)` methods expected from an embedding implementation.
+- Lets `GraphRAG`, `KnowledgeGraphExtractor`, and `Retriever` share one embedding client instance.
+
+The default concrete implementation is now used directly from `pydantic_ai.Embedder` at call sites rather than wrapped in this module.
 
 ### Namespace: `grawiki.doc_processing`
 
@@ -157,6 +160,7 @@ LLM-driven graph extraction implementation.
 Key responsibilities:
 
 - Defines `KnowledgeGraphExtractor`.
+- Defines `KnowledgeGraphExtractorProtocol` for injecting alternate extractors in tests and notebooks.
 - Defines the transient LLM-facing types: `ExtractedNode`, `ExtractedRelationship`, `ExtractedKnowledgeGraph`.
 - Runs a `pydantic_ai.Agent` against chunk text.
 - Produces structured `ExtractedKnowledgeGraph` output.
@@ -184,9 +188,10 @@ Key contents:
 The `GraphDB` interface covers:
 
 - database/index setup,
+- explicit index management through `ensure_indexes(...)`,
 - raw full-text and vector search,
-- graph-neighbor expansion,
-- generic node and relationship upserts,
+- graph-neighbor expansion through `neighbors(...)`,
+- generic node and relationship upserts via `upsert_nodes(...)` and `upsert_relationships(...)`,
 - legacy wrapper methods kept for compatibility during the migration.
 
 Use this module when adding a new database backend or changing the shared persistence/search contract.
@@ -213,10 +218,12 @@ Key responsibilities:
 
 - Defines `FalkorGraphDB`.
 - Opens/selects a FalkorDB graph stored on disk.
-- Creates and tracks full-text and vector indexes.
-- Persists nodes and relationships through generic write primitives.
+- Creates and tracks full-text and vector indexes, including per-label vector dimensions.
+- Persists nodes and relationships through `upsert_nodes(...)` and `upsert_relationships(...)`.
 - Exposes raw full-text search, vector search, and neighbor expansion primitives.
 - Serializes embeddings and metadata into backend-compatible forms.
+- Exposes debugging helpers such as `query(...)`, `ro_query(...)`, `explain(...)`, `query_fulltext_nodes(...)`, and `query_similar_nodes(...)`.
+- Requires explicit `close()` during teardown in tests and scripts.
 - Provides lower-level query helpers for debugging and experimentation.
 
 This is currently the main persistence backend used by the repository.
@@ -237,9 +244,10 @@ Retrieval strategy layer that owns query-side embeddings.
 Key responsibilities:
 
 - Defines `Retriever`.
-- Embeds vector queries with the shared `Embedder`.
+- Embeds vector queries with the shared `Embedding` implementation.
 - Calls `GraphDB.fulltext_search`, `GraphDB.vector_search`, and `GraphDB.neighbors`.
 - Deduplicates flat `NodeHit` lists returned by the DB layer.
+- Exposes `fulltext(...)`, `vector(...)`, and `expand(...)` as the query-side strategy surface.
 
 This module is where query strategy lives; the DB should stay a storage engine.
 
@@ -252,10 +260,12 @@ High-level RAG facade.
 Key responsibilities:
 
 - Defines `GraphRAG`, the main end-to-end ingestion and search entrypoint.
+- Exposes stepwise public helpers for notebooks and debugging: `read_document(...)`, `chunk_document(...)`, `embed_document(...)`, `embed_chunks(...)`, `build_document_node(...)`, `build_chunk_nodes(...)`, `persist_document_and_chunks(...)`, `extract_kg_per_chunk(...)`, and `persist_entities_and_relationships(...)`.
 - Reads and chunks documents.
-- Embeds documents and chunks with the shared embedder.
+- Embeds documents and chunks with the shared embedding client.
 - Persists documents, chunks, entities, and relationships through `GraphDB`.
 - Delegates search to `Retriever`.
+- Supports dependency injection through the `embedding=` and `kg_extractor=` constructor arguments.
 
 Important public methods:
 
@@ -268,14 +278,14 @@ Important public methods:
 The main runtime path currently looks like this:
 
 1. `grawiki.GraphRAG.ingest()` starts ingestion.
-2. `grawiki.doc_processing.document_processing.read_document()` loads a file into a `Document`.
-3. `grawiki.doc_processing.chunkers.Chunker` splits the document into `Chunk` objects.
-4. `grawiki.rag.graph_rag.GraphRAG` embeds the document and chunks with the shared embedder.
-5. `grawiki.graph.models.DocumentNode` and `ChunkNode` are created for persistence.
-6. `grawiki.db.falkordb.FalkorGraphDB` upserts documents, chunks, and `__has_chunk__` relationships.
-7. `grawiki.graph.extraction.KnowledgeGraphExtractor` extracts entity/relationship graphs from each chunk.
-8. `grawiki.db.falkordb.FalkorGraphDB` upserts extracted entities, `__mentions__` links, and entity relationships.
-9. `grawiki.retrieval.retriever.Retriever` embeds search queries when needed and calls the DB primitives.
+2. `GraphRAG.read_document()` loads a file into a `Document`.
+3. `GraphRAG.chunk_document()` uses `grawiki.doc_processing.chunkers.Chunker` to split it into `Chunk` objects.
+4. `GraphRAG.embed_document()` and `GraphRAG.embed_chunks()` compute embeddings with the shared embedding client.
+5. `GraphRAG.build_document_node()` and `GraphRAG.build_chunk_nodes()` attach embeddings to persisted node models.
+6. `GraphRAG.persist_document_and_chunks()` ensures indexes and persists documents, chunks, and `__has_chunk__` relationships.
+7. `GraphRAG.extract_kg_per_chunk()` runs `KnowledgeGraphExtractor.extract(...)` concurrently across chunks.
+8. `GraphRAG.persist_entities_and_relationships()` ensures entity indexes and persists extracted entities, `__mentions__` links, and entity relationships.
+9. `Retriever.fulltext(...)` or `Retriever.vector(...)` executes query-time retrieval; vector queries are embedded in the retrieval layer, not in the DB adapter.
 10. `grawiki.GraphRAG.search()` returns flat `NodeHit` results.
 
 ## Notes For New Agents
@@ -283,6 +293,7 @@ The main runtime path currently looks like this:
 ### Main integration points
 
 - For end-to-end ingestion and search work, start in `src/grawiki/rag/graph_rag.py`.
+- For stepwise ingestion debugging or notebook workflows, use the public helper methods on `GraphRAG` before dropping into lower-level modules.
 - For schema changes, start in `src/grawiki/graph/models.py`.
 - For extraction behavior changes, inspect `src/grawiki/graph/extraction.py` and `src/grawiki/graph/prompts.py` together.
 - For persistence changes, inspect `src/grawiki/db/base.py`, `src/grawiki/db/cypher.py`, and `src/grawiki/db/falkordb.py` together.

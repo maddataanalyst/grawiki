@@ -1,7 +1,7 @@
 import uuid
 from pathlib import Path
-from src.grawiki.core.commons import Document, Chunk
-from src.grawiki.doc_processing.chunkers import Chunker
+from grawiki.core.commons import Document, Chunk
+from grawiki.doc_processing.chunkers import Chunker
 
 
 def read_document(file_path: Path) -> Document:

@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.grawiki.core.commons import Chunk, Document
+from grawiki.core.commons import Chunk, Document
 
 
 class GraphModel(BaseModel):

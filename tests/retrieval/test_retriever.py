@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 from typing import Iterable, Mapping, Sequence
 
-from src.grawiki.db.base import GraphDB, NodeHit
-from src.grawiki.graph.models import KnowledgeGraph, Node, Relationship
-from src.grawiki.retrieval.retriever import Retriever, _deduplicate_hits
+from grawiki.db.base import GraphDB, NodeHit
+from grawiki.graph.models import Node, Relationship
+from grawiki.retrieval.text import TextRetriever, _deduplicate_hits
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ def test_fulltext_delegates_to_db_and_deduplicates() -> None:
 
     node = _make_node("n1")
     db = FakeGraphDB(fulltext_hits=[NodeHit(node=node), NodeHit(node=node)])
-    retriever = Retriever(db=db, embedding=FakeEmbedder())
+    retriever = TextRetriever(db=db, embedding=FakeEmbedder())
 
     hits = asyncio.run(retriever.fulltext("hello", labels=["__chunk__"], limit=5))
 
@@ -114,7 +114,7 @@ def test_fulltext_passes_labels_and_limit() -> None:
     """fulltext() should forward labels and limit unchanged."""
 
     db = FakeGraphDB()
-    retriever = Retriever(db=db, embedding=FakeEmbedder())
+    retriever = TextRetriever(db=db, embedding=FakeEmbedder())
 
     asyncio.run(retriever.fulltext("q", labels=["__document__", "__entity__"], limit=3))
 
@@ -131,7 +131,7 @@ def test_vector_embeds_query_before_calling_db() -> None:
     """vector() should embed the query and pass the vector to db.vector_search."""
 
     db = FakeGraphDB()
-    retriever = Retriever(db=db, embedding=FakeEmbedder())
+    retriever = TextRetriever(db=db, embedding=FakeEmbedder())
 
     asyncio.run(retriever.vector("hi", labels=["__chunk__"], limit=7))
 
@@ -149,7 +149,7 @@ def test_vector_deduplicates_results() -> None:
     db = FakeGraphDB(
         vector_hits=[NodeHit(node=node, score=0.9), NodeHit(node=node, score=0.8)]
     )
-    retriever = Retriever(db=db, embedding=FakeEmbedder())
+    retriever = TextRetriever(db=db, embedding=FakeEmbedder())
 
     hits = asyncio.run(retriever.vector("q", labels=["__chunk__"]))
 
@@ -171,7 +171,7 @@ def test_expand_calls_neighbors_with_seed_ids() -> None:
         NodeHit(node=_make_node("s1")),
         NodeHit(node=_make_node("s2")),
     ]
-    retriever = Retriever(db=db, embedding=FakeEmbedder())
+    retriever = TextRetriever(db=db, embedding=FakeEmbedder())
 
     nodes = asyncio.run(
         retriever.expand(seed_hits, rel_types=["__mentions__"], depth=2)
@@ -189,7 +189,7 @@ def test_expand_returns_empty_for_no_seeds() -> None:
     """expand() should short-circuit and return [] when seeds is empty."""
 
     db = FakeGraphDB()
-    retriever = Retriever(db=db, embedding=FakeEmbedder())
+    retriever = TextRetriever(db=db, embedding=FakeEmbedder())
 
     nodes = asyncio.run(retriever.expand([]))
 

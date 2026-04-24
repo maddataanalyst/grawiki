@@ -14,6 +14,14 @@ def _build_embedding_assignment(alias: str, embedding_literal: str | None) -> st
     return f",\n    {alias}.embedding = {embedding_literal}"
 
 
+def _build_relationship_set_clause(alias: str = "r") -> str:
+    return (
+        f"ON CREATE SET {alias}.id = $id\n"
+        f"SET {alias}.label = $label,\n"
+        f"    {alias}.properties = $properties"
+    )
+
+
 def sanitize_cypher_identifier(identifier: str) -> str:
     """Normalize a user-provided label or relation type for Cypher.
 
@@ -117,13 +125,12 @@ def upsert_rel_cypher(rel_type: str) -> str:
     """
 
     safe_type = sanitize_cypher_identifier(rel_type)
+    rel_set_clause = _build_relationship_set_clause()
     return f"""
 MATCH (s:__entity__ {{id: $source}})
 MATCH (t:__entity__ {{id: $target}})
 MERGE (s)-[r:{safe_type}]->(t)
-ON CREATE SET r.id = $id
-SET r.label = $label,
-    r.properties = $properties
+{rel_set_clause}
 RETURN r
 """.strip()
 
@@ -136,12 +143,14 @@ def link_nodes_cypher(
     target_label: str,
     target_match_field: str = "id",
 ) -> str:
-    """Build a pure-linkage query (no SET clauses) for system relationships.
+    """Build a system-relationship upsert query with stored metadata.
 
     This builder is intended for system-controlled relationship types such as
-    ``__has_chunk__`` and ``__mentions__``. Unlike :func:`upsert_rel_cypher` it
-    does **not** sanitize the relationship type — callers must validate system
-    types with a regex pattern (see ``_REL_TYPE_PATTERN`` in ``falkordb.py``).
+    ``__has_chunk__`` and ``__mentions__``. Unlike :func:`upsert_rel_cypher`, it
+    does **not** sanitize the relationship type because reserved system types
+    such as ``__mentions__`` must be preserved exactly. Callers must validate
+    system types with a regex pattern (see ``_REL_TYPE_PATTERN`` in
+    ``falkordb.py``).
 
     Parameters
     ----------
@@ -159,11 +168,15 @@ def link_nodes_cypher(
     Returns
     -------
     str
-        Cypher query string.
+        Cypher query string matching both endpoints and persisting the
+        relationship ``id``, ``label``, and ``properties`` fields.
     """
 
+    rel_set_clause = _build_relationship_set_clause()
     return f"""
 MATCH (s:{source_label} {{{source_match_field}: $source}})
 MATCH (t:{target_label} {{{target_match_field}: $target}})
-MERGE (s)-[:{rel_type}]->(t)
+MERGE (s)-[r:{rel_type}]->(t)
+{rel_set_clause}
+RETURN r
 """.strip()

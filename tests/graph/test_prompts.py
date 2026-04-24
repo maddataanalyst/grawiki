@@ -1,6 +1,6 @@
 """Tests for graph extraction prompt semantics."""
 
-from src.grawiki.graph.prompts import KG_EXTRACTION_PROMPT
+from grawiki.graph.prompts import KG_EXTRACTION_PROMPT
 
 
 def test_prompt_defines_node_identity_fields() -> None:

@@ -7,8 +7,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
-from src.grawiki.core.commons import Chunk, Document
-from src.grawiki.graph.models import (
+from grawiki.core.commons import Chunk, Document
+from grawiki.graph.models import (
     ChunkNode,
     DocumentNode,
     KnowledgeGraph,
@@ -29,13 +29,15 @@ class NodeHit:
     ----------
     node : Node
         Node returned by the backend. May be a concrete subclass such as
-        :class:`~src.grawiki.graph.models.DocumentNode`,
-        :class:`~src.grawiki.graph.models.ChunkNode`, or
-        :class:`~src.grawiki.graph.models.MemoryNode` depending on the
+        :class:`~grawiki.graph.models.DocumentNode`,
+        :class:`~grawiki.graph.models.ChunkNode`, or
+        :class:`~grawiki.graph.models.MemoryNode` depending on the
         node's label.
     score : float, optional
-        Backend-reported similarity score. Defaults to ``0.0`` when the
-        backend does not provide one (for example full-text hits).
+        Adapter-reported relevance score. Adapters may normalize
+        backend-specific distance values into higher-is-better scores.
+        Defaults to ``0.0`` when the backend does not provide one (for
+        example full-text hits).
     matched_on : str, optional
         Short descriptor of how the hit was matched (for example
         ``"fulltext:content"`` or ``"vector"``). Empty when not
@@ -370,7 +372,7 @@ def _group_hits_by_label(hits: list[NodeHit], *, limit: int) -> SearchResults:
             "id": hit.node.id,
             "name": hit.node.name,
         }
-        from src.grawiki.graph.models import ChunkNode, DocumentNode
+        from grawiki.graph.models import ChunkNode, DocumentNode
 
         if isinstance(hit.node, DocumentNode):
             row["content"] = hit.node.content

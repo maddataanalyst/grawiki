@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.grawiki.db.cypher import (
+from grawiki.db.cypher import (
     link_nodes_cypher,
     sanitize_cypher_identifier,
     upsert_node_cypher,
@@ -82,7 +82,7 @@ def test_upsert_rel_cypher_inlines_sanitized_type() -> None:
 
 
 def test_link_nodes_cypher_has_chunk() -> None:
-    """System __has_chunk__ link should match source by id and target by id."""
+    """System __has_chunk__ link should persist the shared relationship fields."""
 
     query = link_nodes_cypher(
         "__has_chunk__",
@@ -92,12 +92,15 @@ def test_link_nodes_cypher_has_chunk() -> None:
 
     assert "MATCH (s:__document__ {id: $source})" in query
     assert "MATCH (t:__chunk__ {id: $target})" in query
-    assert "MERGE (s)-[:__has_chunk__]->(t)" in query
-    assert "SET" not in query
+    assert "MERGE (s)-[r:__has_chunk__]->(t)" in query
+    assert "ON CREATE SET r.id = $id" in query
+    assert "r.label = $label" in query
+    assert "r.properties = $properties" in query
+    assert "RETURN r" in query
 
 
 def test_link_nodes_cypher_mentions() -> None:
-    """System __mentions__ link should match target entity by semantic_key."""
+    """System __mentions__ link should store metadata and match target semantic_key."""
 
     query = link_nodes_cypher(
         "__mentions__",
@@ -108,5 +111,8 @@ def test_link_nodes_cypher_mentions() -> None:
 
     assert "MATCH (s:__chunk__ {id: $source})" in query
     assert "MATCH (t:__entity__ {semantic_key: $target})" in query
-    assert "MERGE (s)-[:__mentions__]->(t)" in query
-    assert "SET" not in query
+    assert "MERGE (s)-[r:__mentions__]->(t)" in query
+    assert "ON CREATE SET r.id = $id" in query
+    assert "r.label = $label" in query
+    assert "r.properties = $properties" in query
+    assert "RETURN r" in query

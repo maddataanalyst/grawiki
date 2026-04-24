@@ -1,7 +1,7 @@
 """Shared embedder protocol and default wrapper.
 
 This module defines the single embedder contract used across GraWiki. Both
-the :class:`~src.grawiki.graph.extraction.KnowledgeGraphExtractor` and the
+the :class:`~grawiki.graph.extraction.KnowledgeGraphExtractor` and the
 ingestion/retrieval layers accept an :class:`Embedder` instance so that
 exactly one embedding model is constructed per pipeline.
 """

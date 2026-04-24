@@ -4,10 +4,10 @@ import asyncio
 
 import pytest
 
-from src.grawiki.core.commons import Chunk
-from src.grawiki.db.base import NodeHit
-from src.grawiki.db.falkordb import FalkorGraphDB
-from src.grawiki.graph.models import (
+from grawiki.core.commons import Chunk
+from grawiki.db.base import NodeHit
+from grawiki.db.falkordb import FalkorGraphDB
+from grawiki.graph.models import (
     ChunkNode,
     DocumentNode,
     KnowledgeGraph,
@@ -135,10 +135,18 @@ def test_save_documents_chunks_entities_and_relationships_with_indexes(
     assert graph_db.ro_query(
         "MATCH (:__document__)-[r:__has_chunk__]->(:__chunk__) RETURN count(r)"
     ).result_set == [[2]]
+    assert graph_db.ro_query(
+        "MATCH (:__document__)-[r:__has_chunk__]->(:__chunk__) "
+        "RETURN DISTINCT r.label, r.properties"
+    ).result_set == [["__has_chunk__", "{}"]]
     assert graph_db.ro_query("MATCH (e:__entity__) RETURN count(e)").result_set == [[2]]
     assert graph_db.ro_query(
         "MATCH (:__chunk__)-[r:__mentions__]->(:__entity__) RETURN count(r)"
     ).result_set == [[3]]
+    assert graph_db.ro_query(
+        "MATCH (:__chunk__)-[r:__mentions__]->(:__entity__) "
+        "RETURN DISTINCT r.label, r.properties"
+    ).result_set == [["__mentions__", "{}"]]
     assert graph_db.ro_query(
         "MATCH (:__entity__ {semantic_key: 'person_alan-turing'})-[r:studied]->"
         "(:__entity__ {semantic_key: 'concept_computability'}) RETURN count(r)"
@@ -175,7 +183,7 @@ def test_save_documents_chunks_entities_and_relationships_with_indexes(
         return_expression="node.name, score",
     ).result_set
     assert vector_results[0][0] == "Alan Turing"
-    assert vector_results[0][1] == pytest.approx(0.0, abs=1e-6)
+    assert vector_results[0][1] == pytest.approx(1.0, abs=1e-6)
     explain_result = graph_db.explain_vector_query("__entity__", [1.0, 0.0, 0.0], 2)
     assert "ProcedureCall" in str(explain_result)
 
@@ -385,7 +393,11 @@ def test_vector_search_returns_scored_node_hits(
     top_document = next(hit for hit in hits if hit.node.label == "__document__")
     assert isinstance(top_document.node, DocumentNode)
     assert top_document.node.name == "Graph Memory"
-    assert top_document.score == pytest.approx(0.0, abs=1e-6)
+    assert top_document.score == pytest.approx(1.0, abs=1e-6)
+
+    chunk_hits = [hit for hit in hits if hit.node.label == "__chunk__"]
+    assert [hit.node.name for hit in chunk_hits] == ["Chunk chunk_1", "Chunk chunk_2"]
+    assert chunk_hits[0].score > chunk_hits[1].score
 
 
 def test_neighbors_returns_mentioned_entities(

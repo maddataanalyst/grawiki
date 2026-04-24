@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from src.grawiki.graph.extraction import (
+from grawiki.graph.extraction import (
     ExtractedKnowledgeGraph,
     ExtractedNode,
     KnowledgeGraphExtractor,

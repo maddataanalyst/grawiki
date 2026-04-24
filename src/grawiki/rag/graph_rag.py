@@ -10,18 +10,19 @@ from typing import Literal
 
 from pydantic_ai import Embedder
 
-from src.grawiki.core.commons import Chunk, Document
-from src.grawiki.core.embedding import Embedding
-from src.grawiki.db.base import GraphDB, NodeHit
-from src.grawiki.doc_processing.chunkers import Chunker
-from src.grawiki.doc_processing.document_processing import chunk_document, read_document
-from src.grawiki.graph.extraction import (
+from grawiki.core.commons import Chunk, Document
+from grawiki.core.embedding import Embedding
+from grawiki.db.base import GraphDB, NodeHit
+from grawiki.doc_processing.chunkers import Chunker
+from grawiki.doc_processing.document_processing import chunk_document, read_document
+from grawiki.graph.extraction import (
     KnowledgeGraphExtractor,
     KnowledgeGraphExtractorProtocol,
 )
-from src.grawiki.graph.models import ChunkNode, DocumentNode, KnowledgeGraph
-from src.grawiki.retrieval.retriever import Retriever
-
+from grawiki.graph.models import ChunkNode, DocumentNode, KnowledgeGraph
+from grawiki.retrieval.base import Retriever
+from grawiki.retrieval.text import TextRetriever
+from grawiki.retrieval.keywords import KeywordsPathRetriever
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ class GraphRAG:
     db : GraphDB
         Graph database adapter used for persistence and search.
     chunking_strategy : str, optional
-        Chunking strategy passed to :class:`~src.grawiki.doc_processing.chunkers.Chunker`.
+        Chunking strategy passed to :class:`~grawiki.doc_processing.chunkers.Chunker`.
     max_workers : int, optional
         Maximum number of concurrent chunk-level extraction coroutines.
     embedder : Embedding | None, optional
@@ -62,6 +63,7 @@ class GraphRAG:
         max_workers: int = 4,
         embedding: Embedding | None = None,
         kg_extractor: KnowledgeGraphExtractorProtocol | None = None,
+        retrievers: tuple[Retriever, ...] | None = None,
     ) -> None:
         self.model = model
         self.embedding_model = embedding_model
@@ -75,7 +77,10 @@ class GraphRAG:
             model=model,
             embedding=self._embedding,
         )
-        self._retriever = Retriever(db=db, embedding=self._embedding)
+        self._retrievers = retrievers or (
+            TextRetriever(db=db, embedding=self._embedding),
+            KeywordsPathRetriever(model=model, db=db, embedding=self._embedding),
+        )
 
     # ------------------------------------------------------------------
     # Public step methods (useful for notebooks and debugging)
@@ -253,7 +258,6 @@ class GraphRAG:
         self,
         query: str,
         *,
-        method: Literal["fulltext", "vector"] = "vector",
         limit: int = 10,
     ) -> list[NodeHit]:
         """Search documents, chunks, and entities.
@@ -262,8 +266,6 @@ class GraphRAG:
         ----------
         query : str
             Raw user query text.
-        method : {"fulltext", "vector"}, optional
-            Search strategy. Defaults to ``"vector"``.
         limit : int, optional
             Maximum number of results per node family.
 
@@ -273,11 +275,22 @@ class GraphRAG:
             Flat, deduplicated search hits across documents, chunks, and entities.
         """
 
-        logger.info("Running %s search for query %r", method, query)
-        if method == "fulltext":
-            return await self._retriever.fulltext(
-                query, labels=_DEFAULT_SEARCH_LABELS, limit=limit
-            )
-        return await self._retriever.vector(
-            query, labels=_DEFAULT_SEARCH_LABELS, limit=limit
-        )
+        logger.info("Running search for query %r", query)
+        node_hit_scores = {}
+        node_hits = {}
+        for retriever in self._retrievers:
+            hits = await retriever.retrieve(query, limit=limit)
+            for hit in hits:
+                hit_id = hit.node.id
+                score = hit.score
+                if hit_id in node_hit_scores:
+                    if score > node_hit_scores[hit_id]:
+                        node_hit_scores[hit_id] = score
+                        node_hits[hit_id] = hit
+                else:
+                    node_hit_scores[hit_id] = score
+                    node_hits[hit_id] = hit
+        sorted_hits = sorted(
+            node_hits.values(), key=lambda h: node_hit_scores[h.node.id], reverse=True
+        )[:limit]
+        return sorted_hits

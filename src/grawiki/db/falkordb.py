@@ -12,14 +12,14 @@ from typing import Any, Iterable, Literal, Mapping, Sequence
 from redis.exceptions import ResponseError
 from redislite.falkordb_client import FalkorDB
 
-from src.grawiki.db.base import GraphDB, NodeHit, SearchResults
-from src.grawiki.db.cypher import (
+from grawiki.db.base import GraphDB, NodeHit, SearchResults
+from grawiki.db.cypher import (
     link_nodes_cypher,
     sanitize_cypher_identifier,
     upsert_node_cypher,
     upsert_rel_cypher,
 )
-from src.grawiki.graph.models import (
+from grawiki.graph.models import (
     ChunkNode,
     DocumentNode,
     MemoryNode,
@@ -259,9 +259,18 @@ class FalkorGraphDB(GraphDB):
         ``__mentions__`` matches the entity target by ``semantic_key``
         (stored as ``rel.target``) so entity merging is transparent.
         All other labels match entity endpoints by ``id``.
+        Every relationship persists the same ``id``, ``label``, and
+        serialized ``properties`` fields.
         """
 
         for rel in rels:
+            params = {
+                "source": rel.source,
+                "target": rel.target,
+                "id": rel.id,
+                "label": rel.label,
+                "properties": self._serialize_mapping(rel.properties),
+            }
             if rel.label == "__has_chunk__":
                 self._query(
                     link_nodes_cypher(
@@ -269,7 +278,7 @@ class FalkorGraphDB(GraphDB):
                         source_label="__document__",
                         target_label="__chunk__",
                     ),
-                    {"source": rel.source, "target": rel.target},
+                    params,
                 )
             elif rel.label == "__mentions__":
                 self._query(
@@ -279,18 +288,12 @@ class FalkorGraphDB(GraphDB):
                         target_label="__entity__",
                         target_match_field="semantic_key",
                     ),
-                    {"source": rel.source, "target": rel.target},
+                    params,
                 )
             else:
                 self._query(
                     upsert_rel_cypher(rel.label),
-                    {
-                        "source": rel.source,
-                        "target": rel.target,
-                        "id": rel.id,
-                        "label": rel.label,
-                        "properties": self._serialize_mapping(rel.properties),
-                    },
+                    params,
                 )
 
     def _upsert_single_node(self, node: Node) -> None:
@@ -585,7 +588,7 @@ class FalkorGraphDB(GraphDB):
         *,
         attribute: str = "embedding",
         return_expression: str = "node, score",
-        order_by: str | None = "score ASC",
+        order_by: str | None = None,
     ) -> Any:
         """Run a vector similarity search against node embeddings.
 
@@ -602,7 +605,9 @@ class FalkorGraphDB(GraphDB):
         return_expression : str, optional
             Cypher expression returned from the procedure output.
         order_by : str | None, optional
-            Optional ``ORDER BY`` clause content.
+            Optional ``ORDER BY`` clause content. When omitted, cosine indexes
+            are normalized to similarity and sorted by descending score, while
+            euclidean indexes keep their backend distance ordering.
 
         Returns
         -------
@@ -613,7 +618,26 @@ class FalkorGraphDB(GraphDB):
         vector_literal = self._require_embedding_literal(embedding)
         label_literal = self._serialize_cypher_string(label)
         attribute_literal = self._serialize_cypher_string(attribute)
-        order_clause = f" ORDER BY {order_by}" if order_by else ""
+        if self.vector_similarity_function == "cosine":
+            effective_order_by = "score DESC" if order_by is None else order_by
+            order_clause = (
+                f" ORDER BY {effective_order_by}" if effective_order_by else ""
+            )
+            return self.ro_query(
+                "CALL db.idx.vector.queryNodes({label}, {attribute}, {k}, {embedding}) "
+                "YIELD node, score WITH node, (1 - score) AS score "
+                "RETURN {return_expression}{order_clause}".format(
+                    label=label_literal,
+                    attribute=attribute_literal,
+                    k=int(k),
+                    embedding=vector_literal,
+                    return_expression=return_expression,
+                    order_clause=order_clause,
+                )
+            )
+
+        effective_order_by = "score ASC" if order_by is None else order_by
+        order_clause = f" ORDER BY {effective_order_by}" if effective_order_by else ""
         return self.ro_query(
             "CALL db.idx.vector.queryNodes({label}, {attribute}, {k}, {embedding}) "
             "YIELD node, score RETURN {return_expression}{order_clause}".format(

@@ -1,7 +1,7 @@
 """Tests for graph model semantics."""
 
-from src.grawiki.core.commons import Chunk, Document
-from src.grawiki.graph.models import ChunkNode, DocumentNode, MemoryNode
+from grawiki.core.commons import Chunk, Document
+from grawiki.graph.models import ChunkNode, DocumentNode, MemoryNode
 
 
 def test_document_node_from_document_uses_title_as_name() -> None:
