@@ -149,8 +149,7 @@ def link_nodes_cypher(
     ``__has_chunk__`` and ``__mentions__``. Unlike :func:`upsert_rel_cypher`, it
     does **not** sanitize the relationship type because reserved system types
     such as ``__mentions__`` must be preserved exactly. Callers must validate
-    system types with a regex pattern (see ``_REL_TYPE_PATTERN`` in
-    ``falkordb.py``).
+    system relationship types before passing them here.
 
     Parameters
     ----------

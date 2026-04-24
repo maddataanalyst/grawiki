@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from grawiki.core.commons import Chunk
-from grawiki.db.base import NodeHit
+from grawiki.db.base import NeighborRelationship, NodeHit
 from grawiki.db.falkordb import FalkorGraphDB
 from grawiki.graph.models import (
     ChunkNode,
@@ -400,18 +400,51 @@ def test_vector_search_returns_scored_node_hits(
     assert chunk_hits[0].score > chunk_hits[1].score
 
 
-def test_neighbors_returns_mentioned_entities(
+def test_list_entities_returns_persisted_entities(
     populated_graph_db: FalkorGraphDB,
 ) -> None:
-    """``neighbors`` should walk ``__mentions__`` edges from a chunk."""
+    """Entity listing should preserve ontology labels and optionally embeddings."""
 
-    entities = asyncio.run(
-        populated_graph_db.neighbors(
-            node_ids=["chunk_1"],
-            rel_types=["__mentions__"],
-            depth=1,
+    entities_without_embeddings = asyncio.run(populated_graph_db.list_entities())
+    entities_with_embeddings = asyncio.run(
+        populated_graph_db.list_entities(include_embeddings=True)
+    )
+
+    assert [
+        (entity.id, entity.label, entity.name) for entity in entities_without_embeddings
+    ] == [
+        ("entity_comp", "Concept", "Computability"),
+        ("entity_turing", "Person", "Alan Turing"),
+    ]
+    assert all(not entity.embedding for entity in entities_without_embeddings)
+    assert entities_with_embeddings[0].embedding == [0.0, 1.0, 0.0]
+    assert entities_with_embeddings[1].embedding == [1.0, 0.0, 0.0]
+
+
+def test_neighbor_relationships_returns_one_hop_context(
+    populated_graph_db: FalkorGraphDB,
+) -> None:
+    """``neighbor_relationships`` should return typed one-hop context rows."""
+
+    contexts = asyncio.run(
+        populated_graph_db.neighbor_relationships(
+            node_ids=["entity_turing", "entity_comp"],
+            limit_per_node=2,
         )
     )
 
-    names = {node.name for node in entities}
-    assert names == {"Alan Turing", "Computability"}
+    assert set(contexts) == {"entity_turing", "entity_comp"}
+    assert all(
+        isinstance(relationship, NeighborRelationship)
+        for relationship in contexts["entity_turing"]
+    )
+    assert any(
+        relationship.relationship_label == "studied"
+        and relationship.target.name == "Computability"
+        for relationship in contexts["entity_turing"]
+    )
+    assert any(
+        relationship.relationship_label == "studied"
+        and relationship.target.name == "Alan Turing"
+        for relationship in contexts["entity_comp"]
+    )

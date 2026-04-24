@@ -28,25 +28,46 @@ class NodeHit:
     Parameters
     ----------
     node : Node
-        Node returned by the backend. May be a concrete subclass such as
+        Matched node. May be a concrete subclass such as
         :class:`~grawiki.graph.models.DocumentNode`,
         :class:`~grawiki.graph.models.ChunkNode`, or
         :class:`~grawiki.graph.models.MemoryNode` depending on the
         node's label.
     score : float, optional
-        Adapter-reported relevance score. Adapters may normalize
-        backend-specific distance values into higher-is-better scores.
-        Defaults to ``0.0`` when the backend does not provide one (for
-        example full-text hits).
+        Relevance or similarity score. Adapters and higher-level services may
+        normalize backend-specific distance values into higher-is-better
+        scores. Defaults to ``0.0`` when no score is reported.
     matched_on : str, optional
         Short descriptor of how the hit was matched (for example
-        ``"fulltext:content"`` or ``"vector"``). Empty when not
-        reported.
+        ``"fulltext:content"``, ``"vector"``, or ``"rapidfuzz"``). Empty
+        when not reported.
     """
 
     node: Node
     score: float = 0.0
     matched_on: str = ""
+
+
+@dataclass
+class NeighborRelationship:
+    """One-hop relationship context around a seed node.
+
+    Parameters
+    ----------
+    source_id : str
+        Identifier of the seed node that was expanded.
+    source_name : str
+        Human-readable name of the seed node.
+    relationship_label : str
+        Label of the relationship connecting the seed to the target.
+    target : Node
+        Neighbor node connected to the seed.
+    """
+
+    source_id: str
+    source_name: str
+    relationship_label: str
+    target: Node
 
 
 class GraphDB(ABC):
@@ -56,8 +77,10 @@ class GraphDB(ABC):
     -----
     The contract has two layers. Storage-engine primitives
     (:meth:`upsert_nodes`, :meth:`upsert_relationships`,
-    :meth:`fulltext_search`, :meth:`vector_search`, :meth:`neighbors`,
-    :meth:`ensure_indexes`) are the foundational operations every backend
+    :meth:`fulltext_search`, :meth:`vector_search`,
+    :meth:`neighbor_relationships`, :meth:`list_entities`,
+    :meth:`ensure_indexes`) are the
+    foundational operations every backend
     must implement. Higher-level convenience methods
     (:meth:`save_documents_and_chunks`, :meth:`save_docs_and_chunks_to_db`,
     :meth:`save_entities_and_rels`, :meth:`search`) are thin wrappers over
@@ -146,30 +169,43 @@ class GraphDB(ABC):
         """
 
     @abstractmethod
-    async def neighbors(
+    async def neighbor_relationships(
         self,
         *,
         node_ids: Sequence[str],
-        rel_types: Sequence[str] | None = None,
-        depth: int = 1,
-    ) -> list[Node]:
-        """Fetch neighbors of the given seed nodes up to ``depth`` hops.
+        limit_per_node: int = 5,
+    ) -> dict[str, list[NeighborRelationship]]:
+        """Fetch one-hop relationship context for the given seed nodes.
 
         Parameters
         ----------
         node_ids : Sequence[str]
             Seed node identifiers.
-        rel_types : Sequence[str] | None, optional
-            Restrict traversal to these relationship types. ``None`` means
-            follow any relationship.
-        depth : int, optional
-            Maximum traversal depth. Defaults to one hop.
+        limit_per_node : int, optional
+            Maximum number of one-hop relationships returned for each seed.
+
+        Returns
+        -------
+        dict[str, list[NeighborRelationship]]
+            Relationship context keyed by seed node identifier. Seed ids with
+            no matching context should still be present with an empty list.
+        """
+
+    @abstractmethod
+    async def list_entities(self, *, include_embeddings: bool = False) -> list[Node]:
+        """Return persisted entity nodes.
+
+        Parameters
+        ----------
+        include_embeddings : bool, optional
+            Whether entity embeddings should be loaded when available. Callers
+            that only need identifiers and names should keep this disabled to
+            avoid transferring large vectors unnecessarily.
 
         Returns
         -------
         list[Node]
-            Distinct neighbor nodes reachable from the seeds, excluding the
-            seeds themselves.
+            Persisted entity nodes ordered by backend-defined stable ordering.
         """
 
     @abstractmethod

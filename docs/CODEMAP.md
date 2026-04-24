@@ -11,6 +11,7 @@ GraWiki is a Python project for:
 3. Extracting a structured knowledge graph from those chunks with an LLM.
 4. Persisting documents, chunks, entities, and relationships in a graph database.
 5. Searching the stored graph with full-text and vector retrieval.
+6. Inspecting potentially duplicate entities through semantic-key collision checks and pluggable similarity matchers.
 
 In the future: part of the agentic memory. Memories will be added as a separate __entity__, indexed by time.
 Agent will have an option to "recall" -- run dedicated graph search on memories and linked entities.
@@ -182,6 +183,7 @@ Key contents:
 
 - `GraphDB`: abstract base class for persistence and raw search primitives.
 - `NodeHit`: flat hit shape used by the new retrieval layer.
+- `NeighborRelationship`: one-hop graph-context expansion row used by retrieval.
 - `SearchMethod`: literal type for supported retrieval modes (`fulltext` or `vector`).
 - `SearchResults`: common grouped search result shape.
 
@@ -190,7 +192,8 @@ The `GraphDB` interface covers:
 - database/index setup,
 - explicit index management through `ensure_indexes(...)`,
 - raw full-text and vector search,
-- graph-neighbor expansion through `neighbors(...)`,
+- graph-neighbor expansion through `neighbor_relationships(...)`,
+- entity enumeration through `list_entities(...)`,
 - generic node and relationship upserts via `upsert_nodes(...)` and `upsert_relationships(...)`,
 - legacy wrapper methods kept for compatibility during the migration.
 
@@ -239,17 +242,73 @@ Small export module that re-exports:
 
 Retrieval strategy layer that owns query-side embeddings.
 
-#### `src/grawiki/retrieval/retriever.py`
+#### `src/grawiki/retrieval/base.py`
+
+Defines the `Retriever` protocol used by the `GraphRAG` facade.
+
+#### `src/grawiki/retrieval/text.py`
 
 Key responsibilities:
 
-- Defines `Retriever`.
+- Defines `TextRetriever`.
 - Embeds vector queries with the shared `Embedding` implementation.
-- Calls `GraphDB.fulltext_search`, `GraphDB.vector_search`, and `GraphDB.neighbors`.
+- Calls `GraphDB.fulltext_search(...)` and `GraphDB.vector_search(...)`.
 - Deduplicates flat `NodeHit` lists returned by the DB layer.
-- Exposes `fulltext(...)`, `vector(...)`, and `expand(...)` as the query-side strategy surface.
+- Exposes `fulltext(...)` and `vector(...)` as the query-side strategy surface.
 
 This module is where query strategy lives; the DB should stay a storage engine.
+
+#### `src/grawiki/retrieval/keywords.py`
+
+Keyword-path retriever that:
+
+- extracts keyword phrases from the raw query,
+- embeds the phrases,
+- searches entity vectors,
+- expands one-hop graph context with `GraphDB.neighbor_relationships(...)`,
+- returns enriched `NodeHit` objects suitable for downstream RAG context.
+
+### Namespace: `grawiki.similarity`
+
+Entity similarity inspection and duplicate-candidate finding.
+
+#### `src/grawiki/similarity/base.py`
+
+Defines `EntitySimilarityMatcher`, the protocol implemented by concrete
+entity-matching algorithms.
+
+#### `src/grawiki/similarity/fuzzy.py`
+
+Defines `RapidFuzzEntitySimilarityMatcher`, which:
+
+- loads persisted entities via `GraphDB.list_entities(...)`,
+- scores name similarity with `rapidfuzz.fuzz.WRatio`,
+- filters by threshold and optionally by ontology label,
+- returns ranked `NodeHit` candidate matches.
+
+#### `src/grawiki/similarity/vector.py`
+
+Defines `VectorEntitySimilarityMatcher`, which:
+
+- loads persisted entities and embeddings via `GraphDB.list_entities(...)`,
+- computes exact in-memory cosine similarity,
+- filters by threshold and optionally by ontology label,
+- returns ranked `NodeHit` candidate matches.
+
+#### `src/grawiki/similarity/similarity_finder.py`
+
+Defines `EntitySimilarityFinder`, which:
+
+- groups persisted entities by `semantic_key`,
+- reports collision groups with more than one entity,
+- ranks candidates inside exact semantic-key collision groups,
+- runs broader matcher-based duplicate scans across all persisted entities,
+- delegates candidate generation to an injected `EntitySimilarityMatcher`,
+- defaults to the vector matcher when no matcher is injected,
+- exposes a combined two-step duplicate report that first inspects exact semantic-key collisions and then runs a broader matcher-based scan while optionally skipping those exact collisions.
+
+This module is the orchestration layer for duplicate-candidate inspection. It
+does not merge nodes; it only finds potential candidates.
 
 ### Namespace: `grawiki.rag`
 
@@ -264,14 +323,19 @@ Key responsibilities:
 - Reads and chunks documents.
 - Embeds documents and chunks with the shared embedding client.
 - Persists documents, chunks, entities, and relationships through `GraphDB`.
-- Delegates search to `Retriever`.
-- Supports dependency injection through the `embedding=` and `kg_extractor=` constructor arguments.
+- Delegates retrieval search to configured `Retriever` implementations.
+- Exposes entity similarity helpers through `find_similar_entities(...)` and `find_entity_collision_candidates(...)`.
+- Exposes entity duplicate-finding helpers through `find_similar_entities(...)`, `find_entity_collision_candidates(...)`, and `find_entity_duplicate_candidates(...)`.
+- Supports dependency injection through the `embedding=`, `kg_extractor=`, `retrievers=`, and `similarity_finder=` constructor arguments.
 
 Important public methods:
 
 - `GraphRAG.ingest(path)`: main file-ingestion entrypoint.
 - `GraphRAG.ingest_text(text, title)`: ingest text already available in memory.
-- `GraphRAG.search(query, method=...)`: retrieve flat `NodeHit` results.
+- `GraphRAG.search(query)`: retrieve flat `NodeHit` results.
+- `GraphRAG.find_similar_entities(entity)`: inspect candidates for one entity using the configured similarity finder.
+- `GraphRAG.find_entity_collision_candidates()`: inspect semantic-key collision groups and their candidate matches.
+- `GraphRAG.find_entity_duplicate_candidates()`: run the two-step heuristic combining exact semantic-key collisions and broader matcher-based duplicate scanning.
 
 ## Data Flow Overview
 
@@ -287,6 +351,10 @@ The main runtime path currently looks like this:
 8. `GraphRAG.persist_entities_and_relationships()` ensures entity indexes and persists extracted entities, `__mentions__` links, and entity relationships.
 9. `Retriever.fulltext(...)` or `Retriever.vector(...)` executes query-time retrieval; vector queries are embedded in the retrieval layer, not in the DB adapter.
 10. `grawiki.GraphRAG.search()` returns flat `NodeHit` results.
+11. `EntitySimilarityFinder.find_semantic_key_collisions()` detects exact semantic-key duplicates.
+12. `EntitySimilarityFinder.find_collision_candidates()` ranks candidates inside those exact collision groups.
+13. `EntitySimilarityFinder.find_similarity_candidates()` performs the broader matcher-based duplicate scan across persisted entities.
+14. `EntitySimilarityFinder.find_duplicate_candidates()` combines both stages into one duplicate-inspection report.
 
 ## Notes For New Agents
 
@@ -297,7 +365,8 @@ The main runtime path currently looks like this:
 - For schema changes, start in `src/grawiki/graph/models.py`.
 - For extraction behavior changes, inspect `src/grawiki/graph/extraction.py` and `src/grawiki/graph/prompts.py` together.
 - For persistence changes, inspect `src/grawiki/db/base.py`, `src/grawiki/db/cypher.py`, and `src/grawiki/db/falkordb.py` together.
-- For query strategy changes, inspect `src/grawiki/retrieval/retriever.py`.
+- For query strategy changes, inspect `src/grawiki/retrieval/text.py` and `src/grawiki/retrieval/keywords.py`.
+- For entity deduplication and duplicate-candidate work, inspect `src/grawiki/similarity/`.
 - For text loading or chunking changes, inspect `src/grawiki/doc_processing/`.
 
 ### Internal labels in the graph

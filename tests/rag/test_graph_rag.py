@@ -7,10 +7,14 @@ from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 from grawiki.core.commons import Chunk
-from grawiki.db.base import GraphDB, NodeHit
+import pytest
+
+from grawiki.db.base import GraphDB, NeighborRelationship, NodeHit
 from grawiki.graph.models import KnowledgeGraph, Node, Relationship
 from grawiki.rag.graph_rag import GraphRAG
 from grawiki.retrieval.text import TextRetriever
+from grawiki.similarity.fuzzy import RapidFuzzEntitySimilarityMatcher
+from grawiki.similarity.similarity_finder import EntitySimilarityFinder
 
 
 class FakeEmbeddingResult:
@@ -46,6 +50,7 @@ class FakeGraphDB(GraphDB):
         self.saved_entities: list[tuple[list[Chunk], dict[str, KnowledgeGraph]]] = []
         self.fulltext_calls: list[tuple[list[str], str, int]] = []
         self.vector_calls: list[tuple[list[str], list[float], int]] = []
+        self.entities: list[Node] = []
 
     async def setup(self, embedding_dimensions: dict[str, int] | None = None) -> None:
         self.setup_calls.append(embedding_dimensions)
@@ -84,14 +89,42 @@ class FakeGraphDB(GraphDB):
         self.vector_calls.append((list(labels), list(query_embedding), limit))
         return []
 
-    async def neighbors(
+    async def neighbor_relationships(
         self,
         *,
         node_ids: Sequence[str],
-        rel_types: Sequence[str] | None = None,
-        depth: int = 1,
-    ) -> list[Node]:
-        return []
+        limit_per_node: int = 5,
+    ) -> dict[str, list[NeighborRelationship]]:
+        return {node_id: [] for node_id in node_ids}
+
+    async def list_entities(self, *, include_embeddings: bool = False) -> list[Node]:
+        if include_embeddings:
+            return [node.model_copy(deep=True) for node in self.entities]
+        return [
+            node.model_copy(update={"embedding": []}, deep=True)
+            for node in self.entities
+        ]
+
+
+class StaticRetriever:
+    """Retriever stub returning a predefined hit list."""
+
+    def __init__(self, hits: list[NodeHit]) -> None:
+        self.hits = hits
+
+    async def retrieve(
+        self, query: str, limit: int = 5, *args, **kwargs
+    ) -> list[NodeHit]:
+        return list(self.hits)
+
+
+class FailingRetriever:
+    """Retriever stub that always raises to exercise fail-open search."""
+
+    async def retrieve(
+        self, query: str, limit: int = 5, *args, **kwargs
+    ) -> list[NodeHit]:
+        raise RuntimeError("retriever failed")
 
 
 class ConcurrencyTrackingExtractor:
@@ -227,3 +260,205 @@ def test_graph_rag_search_uses_configured_retrievers() -> None:
         [42.0, float(len("machine intelligence")), 7.0],
         5,
     )
+
+
+def test_graph_rag_search_keeps_highest_score_and_distinct_labels() -> None:
+    """GraphRAG should merge retriever results by label-plus-id and max score."""
+
+    graph_db = FakeGraphDB()
+    shared_chunk_low = NodeHit(
+        node=Node(
+            id="shared",
+            label="__chunk__",
+            semantic_key="chunk_shared",
+            name="Chunk shared",
+        ),
+        score=0.4,
+        matched_on="fulltext",
+    )
+    shared_chunk_high = NodeHit(
+        node=Node(
+            id="shared",
+            label="__chunk__",
+            semantic_key="chunk_shared",
+            name="Chunk shared",
+        ),
+        score=0.9,
+        matched_on="vector",
+    )
+    same_id_entity = NodeHit(
+        node=Node(
+            id="shared",
+            label="Person",
+            semantic_key="person_shared",
+            name="Shared Person",
+        ),
+        score=0.7,
+        matched_on="keyword_path",
+    )
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=ConcurrencyTrackingExtractor(),
+        retrievers=(
+            StaticRetriever([shared_chunk_low]),
+            StaticRetriever([shared_chunk_high, same_id_entity]),
+        ),
+    )
+
+    hits = asyncio.run(rag.search("machine intelligence", limit=5))
+
+    assert [(hit.node.label, hit.node.id, hit.score) for hit in hits] == [
+        ("__chunk__", "shared", 0.9),
+        ("Person", "shared", 0.7),
+    ]
+
+
+def test_graph_rag_search_falls_back_to_working_retrievers() -> None:
+    """GraphRAG should return partial results when one retriever fails."""
+
+    graph_db = FakeGraphDB()
+    surviving_hit = NodeHit(
+        node=Node(
+            id="entity_1",
+            label="Person",
+            semantic_key="person_alan-turing",
+            name="Alan Turing",
+        ),
+        score=0.8,
+        matched_on="keyword_path",
+    )
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=ConcurrencyTrackingExtractor(),
+        retrievers=(FailingRetriever(), StaticRetriever([surviving_hit])),
+    )
+
+    hits = asyncio.run(rag.search("machine intelligence", limit=5))
+
+    assert hits == [surviving_hit]
+
+
+def test_graph_rag_search_raises_when_all_retrievers_fail() -> None:
+    """GraphRAG should fail when every configured retriever errors."""
+
+    graph_db = FakeGraphDB()
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=ConcurrencyTrackingExtractor(),
+        retrievers=(FailingRetriever(),),
+    )
+
+    with pytest.raises(RuntimeError, match="All retrievers failed"):
+        asyncio.run(rag.search("machine intelligence", limit=5))
+
+
+def test_graph_rag_similarity_helpers_use_injected_similarity_finder() -> None:
+    """GraphRAG should expose entity similarity helpers via the injected finder."""
+
+    graph_db = FakeGraphDB()
+    graph_db.entities = [
+        Node(
+            id="entity_1",
+            label="Person",
+            semantic_key="person_alan-turing",
+            name="Alan Turing",
+            embedding=[1.0, 0.0, 0.0],
+        ),
+        Node(
+            id="entity_2",
+            label="Person",
+            semantic_key="person_alan-turing",
+            name="Alan M. Turing",
+            embedding=[0.9, 0.1, 0.0],
+        ),
+    ]
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=ConcurrencyTrackingExtractor(),
+        retrievers=(StaticRetriever([]),),
+        similarity_finder=EntitySimilarityFinder(
+            graph_db,
+            matcher=RapidFuzzEntitySimilarityMatcher(db=graph_db),
+        ),
+    )
+
+    hits = asyncio.run(
+        rag.find_similar_entities(
+            graph_db.entities[0],
+            threshold=85.0,
+        )
+    )
+    collisions = asyncio.run(rag.find_entity_collision_candidates(threshold=85.0))
+
+    assert [hit.node.id for hit in hits] == ["entity_2"]
+    assert [group.semantic_key for group in collisions] == ["person_alan-turing"]
+
+
+def test_graph_rag_exposes_combined_duplicate_candidate_report() -> None:
+    """GraphRAG should expose the two-step duplicate-finding heuristic."""
+
+    graph_db = FakeGraphDB()
+    graph_db.entities = [
+        Node(
+            id="entity_1",
+            label="Person",
+            semantic_key="person_alan-turing",
+            name="Alan Turing",
+            embedding=[1.0, 0.0, 0.0],
+        ),
+        Node(
+            id="entity_2",
+            label="Person",
+            semantic_key="person_alan-turing",
+            name="Alan M. Turing",
+            embedding=[0.95, 0.05, 0.0],
+        ),
+        Node(
+            id="entity_3",
+            label="Person",
+            semantic_key="person_grace-hopper",
+            name="Grace Hopper",
+            embedding=[0.0, 1.0, 0.0],
+        ),
+        Node(
+            id="entity_4",
+            label="Person",
+            semantic_key="person_grace-m-hopper",
+            name="Grace M. Hopper",
+            embedding=[0.0, 0.95, 0.05],
+        ),
+    ]
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=ConcurrencyTrackingExtractor(),
+        retrievers=(StaticRetriever([]),),
+    )
+
+    report = asyncio.run(
+        rag.find_entity_duplicate_candidates(
+            threshold=0.9,
+            skip_semantic_key_collisions_in_similarity_scan=True,
+        )
+    )
+
+    assert list(report.semantic_key_collisions) == ["person_alan-turing"]
+    assert [
+        group.semantic_key for group in report.semantic_key_collision_candidates
+    ] == ["person_alan-turing"]
+    assert [result.source.id for result in report.similarity_candidates] == ["entity_3"]
+    assert [hit.node.id for hit in report.similarity_candidates[0].hits] == ["entity_4"]

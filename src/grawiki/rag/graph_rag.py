@@ -19,15 +19,17 @@ from grawiki.graph.extraction import (
     KnowledgeGraphExtractor,
     KnowledgeGraphExtractorProtocol,
 )
-from grawiki.graph.models import ChunkNode, DocumentNode, KnowledgeGraph
+from grawiki.graph.models import ChunkNode, DocumentNode, KnowledgeGraph, Node
 from grawiki.retrieval.base import Retriever
-from grawiki.retrieval.text import TextRetriever
 from grawiki.retrieval.keywords import KeywordsPathRetriever
+from grawiki.retrieval.text import TextRetriever
+from grawiki.similarity.models import (
+    EntityDuplicateCandidates,
+    SemanticKeyCollisionCandidates,
+)
+from grawiki.similarity.similarity_finder import EntitySimilarityFinder
 
 logger = logging.getLogger(__name__)
-
-
-_DEFAULT_SEARCH_LABELS = ["__chunk__", "__entity__"]
 
 
 class GraphRAG:
@@ -45,10 +47,13 @@ class GraphRAG:
         Chunking strategy passed to :class:`~grawiki.doc_processing.chunkers.Chunker`.
     max_workers : int, optional
         Maximum number of concurrent chunk-level extraction coroutines.
-    embedder : Embedding | None, optional
+    embedding : Embedding | None, optional
         Embedding override for tests or debugging.
     kg_extractor : KnowledgeGraphExtractorProtocol | None, optional
         Knowledge graph extractor override for tests or debugging.
+    similarity_finder : EntitySimilarityFinder | None, optional
+        Entity similarity finder used for collision inspection and candidate
+        lookup. Defaults to a finder backed by the vector similarity matcher.
     """
 
     def __init__(
@@ -64,7 +69,32 @@ class GraphRAG:
         embedding: Embedding | None = None,
         kg_extractor: KnowledgeGraphExtractorProtocol | None = None,
         retrievers: tuple[Retriever, ...] | None = None,
+        similarity_finder: EntitySimilarityFinder | None = None,
     ) -> None:
+        """Initialize the GraphRAG facade.
+
+        Parameters
+        ----------
+        model : str
+            Chat model used by the knowledge graph extractor.
+        embedding_model : str
+            Embedding model used for documents, chunks, entities, and queries.
+        db : GraphDB
+            Graph database adapter used for persistence and search.
+        chunking_strategy : {"fast", "recursive", "semantic", "sentence", "token"}, optional
+            Chunking strategy used by the internal :class:`~grawiki.doc_processing.chunkers.Chunker`.
+        max_workers : int, optional
+            Maximum number of concurrent chunk-level extraction coroutines.
+        embedding : Embedding | None, optional
+            Embedding override for tests, notebooks, or alternate deployments.
+        kg_extractor : KnowledgeGraphExtractorProtocol | None, optional
+            Knowledge graph extractor override for tests or debugging.
+        retrievers : tuple[Retriever, ...] | None, optional
+            Retrieval strategies used by :meth:`search`.
+        similarity_finder : EntitySimilarityFinder | None, optional
+            Entity similarity finder used by the similarity helper methods.
+        """
+
         self.model = model
         self.embedding_model = embedding_model
         self.chunking_strategy = chunking_strategy
@@ -77,6 +107,7 @@ class GraphRAG:
             model=model,
             embedding=self._embedding,
         )
+        self._entity_similarity = similarity_finder or EntitySimilarityFinder(db=db)
         self._retrievers = retrievers or (
             TextRetriever(db=db, embedding=self._embedding),
             KeywordsPathRetriever(model=model, db=db, embedding=self._embedding),
@@ -87,13 +118,35 @@ class GraphRAG:
     # ------------------------------------------------------------------
 
     def read_document(self, path: Path) -> Document:
-        """Load one source document from disk."""
+        """Load one source document from disk.
+
+        Parameters
+        ----------
+        path : Path
+            Filesystem path to the source document.
+
+        Returns
+        -------
+        Document
+            Loaded source document.
+        """
 
         logger.info("Reading document from %s", path)
         return read_document(path)
 
     def chunk_document(self, document: Document) -> list[Chunk]:
-        """Split a document into chunks."""
+        """Split a document into chunks.
+
+        Parameters
+        ----------
+        document : Document
+            Source document to segment.
+
+        Returns
+        -------
+        list[Chunk]
+            Chunk sequence produced by the configured chunker.
+        """
 
         logger.info("Chunking document %s", document.id)
         chunks = chunk_document(document, self._chunker)
@@ -101,14 +154,36 @@ class GraphRAG:
         return chunks
 
     async def embed_document(self, document: Document) -> list[float]:
-        """Embed one document's content."""
+        """Embed one document's content.
+
+        Parameters
+        ----------
+        document : Document
+            Source document whose content should be embedded.
+
+        Returns
+        -------
+        list[float]
+            Embedding vector for the document content.
+        """
 
         logger.info("Embedding document %s", document.id)
         result = await self._embedding.embed_documents([document.content])
         return list(result.embeddings[0])
 
     async def embed_chunks(self, chunks: list[Chunk]) -> list[list[float]]:
-        """Embed chunk contents in one batch."""
+        """Embed chunk contents in one batch.
+
+        Parameters
+        ----------
+        chunks : list[Chunk]
+            Chunks whose content should be embedded.
+
+        Returns
+        -------
+        list[list[float]]
+            Embedding vectors aligned with the input chunk order.
+        """
 
         if not chunks:
             return []
@@ -121,7 +196,20 @@ class GraphRAG:
     def build_document_node(
         self, document: Document, embedding: list[float]
     ) -> DocumentNode:
-        """Build a document node with its embedding attached."""
+        """Build a document node with its embedding attached.
+
+        Parameters
+        ----------
+        document : Document
+            Source document to convert into a persisted node model.
+        embedding : list[float]
+            Embedding vector for the document.
+
+        Returns
+        -------
+        DocumentNode
+            Prepared document node ready for persistence.
+        """
 
         node = DocumentNode.from_document(document)
         node.embedding = embedding
@@ -130,7 +218,25 @@ class GraphRAG:
     def build_chunk_nodes(
         self, chunks: list[Chunk], embeddings: list[list[float]]
     ) -> list[ChunkNode]:
-        """Build chunk nodes with embeddings attached."""
+        """Build chunk nodes with embeddings attached.
+
+        Parameters
+        ----------
+        chunks : list[Chunk]
+            Source chunks to convert into persisted node models.
+        embeddings : list[list[float]]
+            Embedding vectors aligned with ``chunks``.
+
+        Returns
+        -------
+        list[ChunkNode]
+            Prepared chunk nodes ready for persistence.
+
+        Raises
+        ------
+        ValueError
+            Raised when the number of chunks and embeddings does not match.
+        """
 
         if len(chunks) != len(embeddings):
             raise ValueError("Each chunk must have exactly one embedding.")
@@ -144,7 +250,15 @@ class GraphRAG:
         document_node: DocumentNode,
         chunk_nodes: list[ChunkNode],
     ) -> None:
-        """Persist one document node and its chunk nodes with indexes."""
+        """Persist one document node and its chunk nodes with indexes.
+
+        Parameters
+        ----------
+        document_node : DocumentNode
+            Prepared document node.
+        chunk_nodes : list[ChunkNode]
+            Prepared chunk nodes associated with the document.
+        """
 
         dims: dict[str, int] = {}
         if document_node.embedding:
@@ -161,7 +275,18 @@ class GraphRAG:
     async def extract_kg_per_chunk(
         self, chunks: list[Chunk]
     ) -> dict[str, KnowledgeGraph]:
-        """Extract knowledge graphs for chunks with bounded concurrency."""
+        """Extract knowledge graphs for chunks with bounded concurrency.
+
+        Parameters
+        ----------
+        chunks : list[Chunk]
+            Chunks to analyze.
+
+        Returns
+        -------
+        dict[str, KnowledgeGraph]
+            Extracted graphs keyed by chunk identifier.
+        """
 
         if not chunks:
             return {}
@@ -185,7 +310,15 @@ class GraphRAG:
         chunks: list[Chunk],
         chunk_graphs: dict[str, KnowledgeGraph],
     ) -> None:
-        """Persist extracted entities and relationships."""
+        """Persist extracted entities and relationships.
+
+        Parameters
+        ----------
+        chunks : list[Chunk]
+            Chunks that own the extracted graphs.
+        chunk_graphs : dict[str, KnowledgeGraph]
+            Extracted graphs keyed by chunk identifier.
+        """
 
         entity_dim: int | None = None
         for graph in chunk_graphs.values():
@@ -204,6 +337,121 @@ class GraphRAG:
         )
         await self._db.save_entities_and_rels(chunks, chunk_graphs)
 
+    async def find_similar_entities(
+        self,
+        entity: Node,
+        *,
+        limit: int = 10,
+        threshold: float | None = None,
+        same_label_only: bool = True,
+        candidates: list[Node] | None = None,
+    ) -> list[NodeHit]:
+        """Return candidate entities similar to ``entity``.
+
+        Parameters
+        ----------
+        entity : Node
+            Source entity used as the similarity query.
+        limit : int, optional
+            Maximum number of candidate hits to return.
+        threshold : float | None, optional
+            Optional strategy-specific minimum score.
+        same_label_only : bool, optional
+            Whether candidates must share the same ontology label.
+        candidates : list[Node] | None, optional
+            Optional candidate pool. When omitted, persisted entities are
+            loaded from the graph database.
+
+        Returns
+        -------
+        list[NodeHit]
+            Ranked similarity candidates.
+
+        Notes
+        -----
+        The configured :class:`~grawiki.similarity.similarity_finder.EntitySimilarityFinder`
+        decides which concrete matcher implementation is used.
+        """
+
+        return await self._entity_similarity.search(
+            entity,
+            limit=limit,
+            threshold=threshold,
+            same_label_only=same_label_only,
+            candidates=candidates,
+        )
+
+    async def find_entity_collision_candidates(
+        self,
+        *,
+        limit: int = 10,
+        threshold: float | None = None,
+        same_label_only: bool = True,
+    ) -> list[SemanticKeyCollisionCandidates]:
+        """Return semantic-key collision groups annotated with merge candidates.
+
+        Parameters
+        ----------
+        limit : int, optional
+            Maximum number of candidate hits returned per source entity.
+        threshold : float | None, optional
+            Optional strategy-specific minimum score.
+        same_label_only : bool, optional
+            Whether candidates must share the same ontology label.
+
+        Returns
+        -------
+        list[SemanticKeyCollisionCandidates]
+            Collision groups with per-entity candidate matches.
+
+        Notes
+        -----
+        Candidate generation uses the similarity matcher configured on the
+        injected entity similarity finder.
+        """
+
+        return await self._entity_similarity.find_collision_candidates(
+            limit=limit,
+            threshold=threshold,
+            same_label_only=same_label_only,
+        )
+
+    async def find_entity_duplicate_candidates(
+        self,
+        *,
+        limit: int = 10,
+        threshold: float | None = None,
+        same_label_only: bool = True,
+        skip_semantic_key_collisions_in_similarity_scan: bool = True,
+    ) -> EntityDuplicateCandidates:
+        """Run the two-step duplicate-finding heuristic across entities.
+
+        Parameters
+        ----------
+        limit : int, optional
+            Maximum number of candidate hits returned per source entity.
+        threshold : float | None, optional
+            Optional matcher-specific minimum score.
+        same_label_only : bool, optional
+            Whether candidates must share the same ontology label.
+        skip_semantic_key_collisions_in_similarity_scan : bool, optional
+            Whether the broader similarity scan should exclude entities already
+            involved in exact semantic-key collisions.
+
+        Returns
+        -------
+        EntityDuplicateCandidates
+            Combined duplicate-candidate report produced by the injected entity
+            similarity finder.
+        """
+
+        return await self._entity_similarity.find_duplicate_candidates(
+            limit=limit,
+            threshold=threshold,
+            same_label_only=same_label_only,
+            skip_semantic_key_collisions_in_similarity_scan=skip_semantic_key_collisions_in_similarity_scan,
+        )
+
     # ------------------------------------------------------------------
     # High-level operations
     # ------------------------------------------------------------------
@@ -215,6 +463,12 @@ class GraphRAG:
         ----------
         path : Path
             Source file to ingest.
+
+        Returns
+        -------
+        None
+            This method persists the resulting graph side effects to the
+            configured database.
         """
 
         logger.info("Starting ingestion for %s", path)
@@ -239,6 +493,12 @@ class GraphRAG:
             Document content to ingest.
         title : str
             Human-readable document title used as the document name.
+
+        Returns
+        -------
+        None
+            This method persists the resulting graph side effects to the
+            configured database.
         """
 
         document = Document(id=str(uuid.uuid4()), title=title, content=text)
@@ -272,25 +532,46 @@ class GraphRAG:
         Returns
         -------
         list[NodeHit]
-            Flat, deduplicated search hits across documents, chunks, and entities.
+            Flat, deduplicated search hits across documents, chunks, and
+            entities.
+
+        Raises
+        ------
+        RuntimeError
+            Raised when every configured retriever fails for the query.
         """
 
         logger.info("Running search for query %r", query)
-        node_hit_scores = {}
-        node_hits = {}
+        node_hit_scores: dict[tuple[str, str], float] = {}
+        node_hits: dict[tuple[str, str], NodeHit] = {}
+        errors: list[Exception] = []
         for retriever in self._retrievers:
-            hits = await retriever.retrieve(query, limit=limit)
+            try:
+                hits = await retriever.retrieve(query, limit=limit)
+            except Exception as exc:  # pragma: no cover - defensive integration path
+                errors.append(exc)
+                logger.warning(
+                    "Retriever %s failed for query %r: %s",
+                    type(retriever).__name__,
+                    query,
+                    exc,
+                )
+                continue
             for hit in hits:
-                hit_id = hit.node.id
+                hit_key = (hit.node.label, hit.node.id)
                 score = hit.score
-                if hit_id in node_hit_scores:
-                    if score > node_hit_scores[hit_id]:
-                        node_hit_scores[hit_id] = score
-                        node_hits[hit_id] = hit
+                if hit_key in node_hit_scores:
+                    if score > node_hit_scores[hit_key]:
+                        node_hit_scores[hit_key] = score
+                        node_hits[hit_key] = hit
                 else:
-                    node_hit_scores[hit_id] = score
-                    node_hits[hit_id] = hit
+                    node_hit_scores[hit_key] = score
+                    node_hits[hit_key] = hit
+        if errors and not node_hits:
+            raise RuntimeError("All retrievers failed for the query.") from errors[0]
         sorted_hits = sorted(
-            node_hits.values(), key=lambda h: node_hit_scores[h.node.id], reverse=True
+            node_hits.values(),
+            key=lambda h: node_hit_scores[(h.node.label, h.node.id)],
+            reverse=True,
         )[:limit]
         return sorted_hits

@@ -5,14 +5,14 @@ from __future__ import annotations
 import math
 import json
 import logging
-import re
 from pathlib import Path
+from typing import cast
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from redis.exceptions import ResponseError
 from redislite.falkordb_client import FalkorDB
 
-from grawiki.db.base import GraphDB, NodeHit, SearchResults
+from grawiki.db.base import GraphDB, NeighborRelationship, NodeHit, SearchResults
 from grawiki.db.cypher import (
     link_nodes_cypher,
     sanitize_cypher_identifier,
@@ -53,12 +53,6 @@ _NODE_COLUMNS: tuple[str, ...] = (
     "creation_date",
     "metadata",
 )
-
-# Stored relationship types must match this shape to be safe to interpolate
-# into Cypher. This accepts the project's ``__system__``-style reserved
-# types without the lossy normalization that ``sanitize_cypher_identifier``
-# applies to entity labels.
-_REL_TYPE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class FalkorGraphDB(GraphDB):
@@ -448,66 +442,110 @@ class FalkorGraphDB(GraphDB):
                 )
         return hits
 
-    async def neighbors(
+    async def neighbor_relationships(
         self,
         *,
         node_ids: Sequence[str],
-        rel_types: Sequence[str] | None = None,
-        depth: int = 1,
-    ) -> list[Node]:
-        """Fetch distinct outgoing neighbors of the given seed nodes.
+        limit_per_node: int = 5,
+    ) -> dict[str, list[NeighborRelationship]]:
+        """Fetch one-hop relationship context for each seed node.
 
         Parameters
         ----------
         node_ids : Sequence[str]
             Seed node identifiers.
-        rel_types : Sequence[str] | None, optional
-            Restrict traversal to these relationship types. ``None`` follows
-            any relationship.
-        depth : int, optional
-            Maximum traversal depth. Defaults to one hop.
+        limit_per_node : int, optional
+            Maximum number of relationship rows returned for each seed.
+
+        Returns
+        -------
+        dict[str, list[NeighborRelationship]]
+            Relationship context keyed by seed id.
+        """
+
+        if limit_per_node < 1:
+            raise ValueError(
+                "neighbor_relationships limit_per_node must be at least 1."
+            )
+        unique_ids = list(dict.fromkeys(node_ids))
+        contexts: dict[str, list[NeighborRelationship]] = {
+            node_id: [] for node_id in unique_ids
+        }
+        if not unique_ids:
+            return contexts
+
+        query = (
+            "MATCH (source) WHERE source.id IN $ids "
+            "MATCH (source)-[rel]-(neighbor) "
+            "WITH source, rel, neighbor, labels(neighbor) AS node_labels "
+            "ORDER BY source.id, neighbor.name, neighbor.id, rel.label "
+            "WITH source, collect([rel.label, neighbor, node_labels])[..$limit] AS rows "
+            "UNWIND rows AS row "
+            "WITH source, row[0] AS rel_label, row[1] AS neighbor, row[2] AS node_labels "
+            f"RETURN source.id AS source_id, source.name AS source_name, rel_label, {self._node_return_expression(variable='neighbor')}, node_labels"
+        )
+        result = self.ro_query(query, {"ids": unique_ids, "limit": int(limit_per_node)})
+
+        for row in result.result_set:
+            source_id = row[0]
+            source_name = row[1] or ""
+            relationship_label = row[2] or ""
+            node_offset = 3
+            node_row = row[node_offset : node_offset + len(_NODE_COLUMNS)]
+            cypher_labels = row[node_offset + len(_NODE_COLUMNS)] or []
+            system_label = self._canonical_system_label(cypher_labels)
+            target = self._node_from_row(node_row, system_label=system_label)
+            contexts.setdefault(source_id, []).append(
+                NeighborRelationship(
+                    source_id=source_id,
+                    source_name=source_name,
+                    relationship_label=relationship_label,
+                    target=target,
+                )
+            )
+        return contexts
+
+    async def list_entities(self, *, include_embeddings: bool = False) -> list[Node]:
+        """Return persisted entity nodes ordered by semantic key then id.
+
+        Parameters
+        ----------
+        include_embeddings : bool, optional
+            Whether to include entity embeddings in the result.
 
         Returns
         -------
         list[Node]
-            Distinct neighbor nodes, excluding the seeds themselves.
+            Persisted entity nodes.
         """
 
-        if depth < 1:
-            raise ValueError("neighbors depth must be at least 1.")
-        if not node_ids:
-            return []
-
-        if rel_types:
-            for rel_type in rel_types:
-                if not _REL_TYPE_PATTERN.match(rel_type):
-                    raise ValueError(
-                        f"Invalid relationship type for neighbors traversal: {rel_type!r}"
-                    )
-            rel_pattern = f"[:{'|'.join(rel_types)}*1..{int(depth)}]"
-        else:
-            rel_pattern = f"[*1..{int(depth)}]"
-
-        query = (
-            f"MATCH (seed)-{rel_pattern}->(neighbor) "
-            f"WHERE seed.id IN $ids AND NOT neighbor.id IN $ids "
-            f"WITH DISTINCT neighbor "
-            f"RETURN {self._node_return_expression(variable='neighbor')}, "
-            f"labels(neighbor) AS node_labels"
+        embedding_projection = ", n.embedding" if include_embeddings else ""
+        result = self.ro_query(
+            "MATCH (n:__entity__) "
+            "RETURN n.id, n.label, n.semantic_key, n.name, n.properties"
+            f"{embedding_projection} ORDER BY n.semantic_key, n.id"
         )
-        result = self.ro_query(query, {"ids": list(node_ids)})
-
-        nodes: list[Node] = []
-        seen_ids: set[str] = set()
+        entities: list[Node] = []
         for row in result.result_set:
-            cypher_labels = row[len(_NODE_COLUMNS)] or []
-            system_label = self._canonical_system_label(cypher_labels)
-            node = self._node_from_row(row, system_label=system_label)
-            if node.id in seen_ids:
-                continue
-            seen_ids.add(node.id)
-            nodes.append(node)
-        return nodes
+            properties_json = row[4]
+            properties = (
+                json.loads(properties_json) if isinstance(properties_json, str) else {}
+            )
+            embedding: list[float] = []
+            if include_embeddings and len(row) > 5 and row[5] is not None:
+                raw_embedding = cast(Sequence[Any], row[5])
+                embedding = [float(value) for value in raw_embedding]
+            entities.append(
+                Node(
+                    id=row[0],
+                    label=row[1],
+                    semantic_key=row[2],
+                    name=row[3],
+                    properties=properties,
+                    embedding=embedding,
+                )
+            )
+        return entities
 
     def ro_query(self, query: str, params: dict[str, Any] | None = None) -> Any:
         """Execute a read-only query.

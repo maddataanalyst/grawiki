@@ -1,11 +1,11 @@
 """Retrieval strategy layer — owns the embedder on the query path."""
 
 from __future__ import annotations
+
 from typing_extensions import Literal
 
 from grawiki.core.embedding import Embedding
 from grawiki.db.base import GraphDB, NodeHit
-from grawiki.graph.models import Node
 from grawiki.retrieval.base import Retriever
 
 
@@ -13,8 +13,8 @@ class TextRetriever(Retriever):
     """Embed queries, call DB primitives, and compose results.
 
     The retriever is the single place where query-side embedding happens.
-    The DB layer receives only pre-computed vectors and raw text; ranking,
-    deduplication, and expansion strategy are concerns of this class.
+    The DB layer receives only pre-computed vectors and raw text; ranking
+    and deduplication are concerns of this class.
 
     Parameters
     ----------
@@ -30,12 +30,12 @@ class TextRetriever(Retriever):
         db: GraphDB,
         embedding: Embedding,
         search_method: Literal["vector", "fulltext"] = "vector",
-        search_labels: list[str] = ["__chunk__"],
+        search_labels: list[str] | None = None,
     ) -> None:
         self.db = db
         self.embedding = embedding
         self.search_method = search_method
-        self.search_labels = search_labels
+        self.search_labels = search_labels or ["__chunk__"]
 
     async def retrieve(
         self, query: str, limit: int = 5, *args, **kwargs
@@ -55,14 +55,13 @@ class TextRetriever(Retriever):
             Flat, deduplicated hit list across all requested labels.
         """
 
-        effective_limit = limit if limit is not None else self.limit
         if self.search_method == "vector":
             return await self.vector(
-                query=query, labels=self.search_labels, limit=effective_limit
+                query=query, labels=self.search_labels, limit=limit
             )
         elif self.search_method == "fulltext":
             return await self.fulltext(
-                query=query, labels=self.search_labels, limit=effective_limit
+                query=query, labels=self.search_labels, limit=limit
             )
         else:
             raise ValueError(f"Unsupported search method: {self.search_method}")
@@ -134,39 +133,6 @@ class TextRetriever(Retriever):
             labels=labels, query_embedding=embedding, limit=limit
         )
         return _deduplicate_hits(hits)
-
-    async def expand(
-        self,
-        seeds: list[NodeHit],
-        *,
-        rel_types: list[str] | None = None,
-        depth: int = 1,
-    ) -> list[Node]:
-        """Fetch graph neighbors of the given seed hits.
-
-        Parameters
-        ----------
-        seeds : list[NodeHit]
-            Starting nodes. Their ``node.id`` values are used as seeds.
-        rel_types : list[str] | None, optional
-            Restrict traversal to these relationship types. ``None`` follows
-            any relationship.
-        depth : int, optional
-            Maximum traversal depth.
-
-        Returns
-        -------
-        list[Node]
-            Distinct neighbor nodes reachable from the seeds.
-        """
-
-        if not seeds:
-            return []
-        return await self.db.neighbors(
-            node_ids=[h.node.id for h in seeds],
-            rel_types=rel_types,
-            depth=depth,
-        )
 
 
 def _deduplicate_hits(hits: list[NodeHit]) -> list[NodeHit]:
