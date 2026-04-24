@@ -431,7 +431,7 @@ class _CallCountingFinder:
         threshold: float | None = None,
         same_label_only: bool = True,
         candidates: list[Node] | None = None,
-    ) -> list:
+    ) -> list[NodeHit]:
         self.search_calls.append(entity)
         return await self._inner.search(
             entity,
@@ -762,7 +762,8 @@ def test_resolve_extracted_entities_rewrites_relationship_endpoints() -> None:
         entity_resolution_threshold=0.9,
     )
 
-    # chunk-a: has a relationship whose source is the resolved entity.
+    # chunk-a: has a relationship whose source is the resolved entity (self-loop)
+    # and a mixed relationship whose source is resolved but target is unresolved.
     # chunk-b: contains only the unresolved entity, no relationships.
     chunk_graphs = {
         "chunk-a": KnowledgeGraph(
@@ -774,7 +775,14 @@ def test_resolve_extracted_entities_rewrites_relationship_endpoints() -> None:
                     target="extracted-resolved",
                     label="RELATED_TO",
                     properties={},
-                )
+                ),
+                Relationship(
+                    id="rel-3",
+                    source="extracted-resolved",
+                    target="extracted-unresolved",
+                    label="INFLUENCES",
+                    properties={},
+                ),
             ],
         ),
         "chunk-b": KnowledgeGraph(
@@ -792,7 +800,7 @@ def test_resolve_extracted_entities_rewrites_relationship_endpoints() -> None:
     }
     rewritten = asyncio.run(rag._resolve_extracted_entities(chunk_graphs))
 
-    # chunk-a: resolved entity's id must appear in nodes and in both rel endpoints.
+    # chunk-a: resolved entity's id must appear in nodes and in both endpoints of rel-1.
     chunk_a = rewritten["chunk-a"]
     chunk_a_node_ids = {n.id for n in chunk_a.nodes}
     assert "persisted-1" in chunk_a_node_ids, (
@@ -801,11 +809,21 @@ def test_resolve_extracted_entities_rewrites_relationship_endpoints() -> None:
     assert "extracted-resolved" not in chunk_a_node_ids, (
         "chunk-a: extracted-resolved should be gone after rewrite"
     )
-    assert chunk_a.relationships[0].source == "persisted-1", (
-        "chunk-a relationship source should be rewritten to persisted-1"
+    rel_1 = next(r for r in chunk_a.relationships if r.id == "rel-1")
+    assert rel_1.source == "persisted-1", (
+        "chunk-a rel-1 source should be rewritten to persisted-1"
     )
-    assert chunk_a.relationships[0].target == "persisted-1", (
-        "chunk-a relationship target should be rewritten to persisted-1"
+    assert rel_1.target == "persisted-1", (
+        "chunk-a rel-1 target should be rewritten to persisted-1"
+    )
+
+    # rel-3 (mixed): source is resolved → rewritten; target is unresolved → stays.
+    rel_3 = next(r for r in chunk_a.relationships if r.id == "rel-3")
+    assert rel_3.source == "persisted-1", (
+        "chunk-a rel-3 source should be rewritten to persisted-1"
+    )
+    assert rel_3.target == "extracted-unresolved", (
+        "chunk-a rel-3 target should remain extracted-unresolved"
     )
 
     # chunk-b: unresolved entity and its relationship endpoints must be untouched.
