@@ -491,12 +491,28 @@ def test_graph_rag_resolves_entities_on_ingest_when_enabled() -> None:
     assert "persisted-1" in all_node_ids, (
         "persisted-1 should appear in the persisted chunk graphs"
     )
-    assert "extracted-1" not in all_rel_sources, (
-        "relationship source should have been rewritten to persisted-1"
+    assert all_rel_sources == {"persisted-1"}, (
+        "relationship source should have been rewritten to exactly persisted-1"
     )
-    assert "extracted-1" not in all_rel_targets, (
-        "relationship target should have been rewritten to persisted-1"
+    assert all_rel_targets == {"persisted-1"}, (
+        "relationship target should have been rewritten to exactly persisted-1"
     )
+
+
+def test_graph_rag_rejects_out_of_range_entity_resolution_threshold() -> None:
+    """GraphRAG should reject thresholds outside the cosine [-1, 1] range."""
+
+    graph_db = FakeGraphDB()
+    with pytest.raises(ValueError, match="entity_resolution_threshold"):
+        GraphRAG(
+            model="test-model",
+            embedding_model="test-embedding",
+            db=graph_db,
+            embedding=FakeEmbedder(),
+            kg_extractor=ConcurrencyTrackingExtractor(),
+            retrievers=(StaticRetriever([]),),
+            entity_resolution_threshold=1.5,
+        )
 
 
 def test_graph_rag_does_not_resolve_entities_when_disabled() -> None:

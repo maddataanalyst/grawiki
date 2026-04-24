@@ -120,6 +120,12 @@ class GraphRAG:
             Minimum cosine-similarity score for ingest-time entity resolution.
             Only used when ``resolve_entities_on_ingest=True``.
             Defaults to ``0.92``.
+
+        Raises
+        ------
+        ValueError
+            Raised when ``entity_resolution_threshold`` is outside ``[-1.0, 1.0]``,
+            which is the valid range for cosine similarity scores.
         """
 
         self.model = model
@@ -137,6 +143,11 @@ class GraphRAG:
         self._entity_similarity = similarity_finder or EntitySimilarityFinder(db=db)
         self.resolve_entities_on_ingest = resolve_entities_on_ingest
         self.entity_resolution_threshold = entity_resolution_threshold
+        if not -1.0 <= entity_resolution_threshold <= 1.0:
+            raise ValueError(
+                "entity_resolution_threshold must be within [-1.0, 1.0] "
+                f"(got {entity_resolution_threshold!r})."
+            )
         self._retrievers = retrievers or (
             TextRetriever(db=db, embedding=self._embedding),
             KeywordsPathRetriever(model=model, db=db, embedding=self._embedding),
