@@ -326,7 +326,7 @@ Key responsibilities:
 - Delegates retrieval search to configured `Retriever` implementations.
 - Exposes entity similarity helpers through `find_similar_entities(...)` and `find_entity_collision_candidates(...)`.
 - Exposes entity duplicate-finding helpers through `find_similar_entities(...)`, `find_entity_collision_candidates(...)`, and `find_entity_duplicate_candidates(...)`.
-- Supports dependency injection through the `embedding=`, `kg_extractor=`, `retrievers=`, and `similarity_finder=` constructor arguments.
+- Supports dependency injection through the `embedding=`, `kg_extractor=`, `retrievers=`, `similarity_finder=`, `resolve_entities_on_ingest=`, and `entity_resolution_threshold=` constructor arguments.
 
 Important public methods:
 
@@ -336,6 +336,7 @@ Important public methods:
 - `GraphRAG.find_similar_entities(entity)`: inspect candidates for one entity using the configured similarity finder.
 - `GraphRAG.find_entity_collision_candidates()`: inspect semantic-key collision groups and their candidate matches.
 - `GraphRAG.find_entity_duplicate_candidates()`: run the two-step heuristic combining exact semantic-key collisions and broader matcher-based duplicate scanning.
+- `GraphRAG.ingest(path)` and `GraphRAG.ingest_text(text, title)`: when `resolve_entities_on_ingest=True`, extracted entities are matched against persisted ones (via vector cosine similarity) immediately after extraction and before persistence; any extracted node whose similarity to a persisted node exceeds `entity_resolution_threshold` is replaced by the persisted node, and all relationship endpoints are rewritten to use the persisted node's id.
 
 ## Data Flow Overview
 

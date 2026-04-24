@@ -406,6 +406,148 @@ def test_graph_rag_similarity_helpers_use_injected_similarity_finder() -> None:
     assert [group.semantic_key for group in collisions] == ["person_alan-turing"]
 
 
+class StaticExtractor:
+    """Extractor stub that always returns a pre-built KnowledgeGraph."""
+
+    def __init__(self, graph: KnowledgeGraph) -> None:
+        self._graph = graph
+
+    async def extract(self, chunk: Chunk) -> KnowledgeGraph:
+        return self._graph
+
+
+def test_graph_rag_resolves_entities_on_ingest_when_enabled() -> None:
+    """When resolve_entities_on_ingest=True, extracted nodes matching a persisted
+    node above the threshold should be swapped for the persisted node before
+    persistence, and relationship endpoints should be rewritten accordingly.
+    """
+
+    persisted_node = Node(
+        id="persisted-1",
+        label="Concept",
+        semantic_key="concept_react",
+        name="ReAct",
+        embedding=[0.1, 0.2, 0.3],
+    )
+    extracted_node = Node(
+        id="extracted-1",
+        label="Concept",
+        semantic_key="concept_react-agents",
+        name="ReAct agents",
+        embedding=[0.1, 0.2, 0.31],
+    )
+    # Cosine([0.1,0.2,0.31], [0.1,0.2,0.3]) ≈ 0.99998, well above 0.9 threshold.
+
+    extracted_kg = KnowledgeGraph(
+        nodes=[extracted_node],
+        relationships=[
+            Relationship(
+                id="rel-1",
+                source="extracted-1",
+                target="extracted-1",
+                label="RELATED_TO",
+                properties={},
+            )
+        ],
+    )
+
+    fake_db = FakeGraphDB()
+    fake_db.entities = [persisted_node]
+
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=fake_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(extracted_kg),
+        retrievers=(StaticRetriever([]),),
+        resolve_entities_on_ingest=True,
+        entity_resolution_threshold=0.9,
+    )
+
+    asyncio.run(rag.ingest_text("ReAct agents are a kind of ReAct.", title="t"))
+
+    # Inspect the chunk_graphs that were passed to persist_entities_and_relationships.
+    persisted_chunk_graphs = fake_db.saved_entities[-1][1]
+    all_node_ids = {
+        node.id
+        for graph in persisted_chunk_graphs.values()
+        for node in graph.nodes
+    }
+    all_rel_sources = {
+        rel.source
+        for graph in persisted_chunk_graphs.values()
+        for rel in graph.relationships
+    }
+    all_rel_targets = {
+        rel.target
+        for graph in persisted_chunk_graphs.values()
+        for rel in graph.relationships
+    }
+
+    assert "extracted-1" not in all_node_ids, (
+        "extracted-1 should have been replaced by persisted-1"
+    )
+    assert "persisted-1" in all_node_ids, (
+        "persisted-1 should appear in the persisted chunk graphs"
+    )
+    assert "extracted-1" not in all_rel_sources, (
+        "relationship source should have been rewritten to persisted-1"
+    )
+    assert "extracted-1" not in all_rel_targets, (
+        "relationship target should have been rewritten to persisted-1"
+    )
+
+
+def test_graph_rag_does_not_resolve_entities_when_disabled() -> None:
+    """When resolve_entities_on_ingest=False (the default), extracted nodes are
+    persisted as-is regardless of similarity to any persisted node.
+    """
+
+    persisted_node = Node(
+        id="persisted-1",
+        label="Concept",
+        semantic_key="concept_react",
+        name="ReAct",
+        embedding=[0.1, 0.2, 0.3],
+    )
+    extracted_node = Node(
+        id="extracted-1",
+        label="Concept",
+        semantic_key="concept_react-agents",
+        name="ReAct agents",
+        embedding=[0.1, 0.2, 0.31],
+    )
+
+    extracted_kg = KnowledgeGraph(nodes=[extracted_node], relationships=[])
+
+    fake_db = FakeGraphDB()
+    fake_db.entities = [persisted_node]
+
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=fake_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(extracted_kg),
+        retrievers=(StaticRetriever([]),),
+        # resolve_entities_on_ingest defaults to False
+    )
+
+    asyncio.run(rag.ingest_text("ReAct agents are a kind of ReAct.", title="t"))
+
+    persisted_chunk_graphs = fake_db.saved_entities[-1][1]
+    all_node_ids = {
+        node.id
+        for graph in persisted_chunk_graphs.values()
+        for node in graph.nodes
+    }
+
+    assert "extracted-1" in all_node_ids, (
+        "extracted-1 should be persisted as-is when resolution is disabled"
+    )
+
+
 def test_graph_rag_exposes_combined_duplicate_candidate_report() -> None:
     """GraphRAG should expose the two-step duplicate-finding heuristic."""
 

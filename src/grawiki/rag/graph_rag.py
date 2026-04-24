@@ -19,7 +19,13 @@ from grawiki.graph.extraction import (
     KnowledgeGraphExtractor,
     KnowledgeGraphExtractorProtocol,
 )
-from grawiki.graph.models import ChunkNode, DocumentNode, KnowledgeGraph, Node
+from grawiki.graph.models import (
+    ChunkNode,
+    DocumentNode,
+    KnowledgeGraph,
+    Node,
+    Relationship,
+)
 from grawiki.retrieval.base import Retriever
 from grawiki.retrieval.keywords import KeywordsPathRetriever
 from grawiki.retrieval.text import TextRetriever
@@ -54,6 +60,16 @@ class GraphRAG:
     similarity_finder : EntitySimilarityFinder | None, optional
         Entity similarity finder used for collision inspection and candidate
         lookup. Defaults to a finder backed by the vector similarity matcher.
+    resolve_entities_on_ingest : bool, optional
+        When ``True``, each freshly-extracted entity is compared against
+        persisted entities before persistence. If a persisted entity is found
+        whose cosine similarity exceeds ``entity_resolution_threshold``, the
+        extracted node is replaced by the persisted node and all relationship
+        endpoints are rewritten accordingly. Defaults to ``False``.
+    entity_resolution_threshold : float, optional
+        Minimum cosine-similarity score for two entities to be considered the
+        same during ingest-time resolution. Only used when
+        ``resolve_entities_on_ingest=True``. Defaults to ``0.92``.
     """
 
     def __init__(
@@ -70,6 +86,8 @@ class GraphRAG:
         kg_extractor: KnowledgeGraphExtractorProtocol | None = None,
         retrievers: tuple[Retriever, ...] | None = None,
         similarity_finder: EntitySimilarityFinder | None = None,
+        resolve_entities_on_ingest: bool = False,
+        entity_resolution_threshold: float = 0.92,
     ) -> None:
         """Initialize the GraphRAG facade.
 
@@ -93,6 +111,15 @@ class GraphRAG:
             Retrieval strategies used by :meth:`search`.
         similarity_finder : EntitySimilarityFinder | None, optional
             Entity similarity finder used by the similarity helper methods.
+        resolve_entities_on_ingest : bool, optional
+            When ``True``, each freshly-extracted entity is compared against
+            persisted entities before persistence. Matched nodes are replaced
+            with the persisted node and relationship endpoints are rewritten.
+            Defaults to ``False``.
+        entity_resolution_threshold : float, optional
+            Minimum cosine-similarity score for ingest-time entity resolution.
+            Only used when ``resolve_entities_on_ingest=True``.
+            Defaults to ``0.92``.
         """
 
         self.model = model
@@ -108,6 +135,8 @@ class GraphRAG:
             embedding=self._embedding,
         )
         self._entity_similarity = similarity_finder or EntitySimilarityFinder(db=db)
+        self.resolve_entities_on_ingest = resolve_entities_on_ingest
+        self.entity_resolution_threshold = entity_resolution_threshold
         self._retrievers = retrievers or (
             TextRetriever(db=db, embedding=self._embedding),
             KeywordsPathRetriever(model=model, db=db, embedding=self._embedding),
@@ -453,6 +482,73 @@ class GraphRAG:
         )
 
     # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    async def _resolve_extracted_entities(
+        self, chunk_graphs: dict[str, KnowledgeGraph]
+    ) -> dict[str, KnowledgeGraph]:
+        """Replace extracted entities with persisted duplicates when similar.
+
+        Parameters
+        ----------
+        chunk_graphs : dict[str, KnowledgeGraph]
+            Freshly-extracted chunk graphs. Not mutated.
+
+        Returns
+        -------
+        dict[str, KnowledgeGraph]
+            New dict with matched nodes replaced by the persisted node and all
+            relationships rewritten accordingly. When no matches are found the
+            input is returned unchanged.
+
+        Notes
+        -----
+        Uses ``self._entity_similarity`` so the same similarity strategy that
+        powers the duplicate-candidate helpers is applied during ingestion.
+        ``same_label_only`` is ``False`` because real data shows duplicates
+        routinely cross ontology labels (``'State'`` appears as both
+        ``Type`` and ``Class``, for example).
+        """
+
+        # Collect unique extracted entities across all chunks.
+        unique: dict[str, Node] = {}
+        for graph in chunk_graphs.values():
+            for node in graph.nodes:
+                unique.setdefault(node.id, node)
+
+        # One similarity search per unique extracted entity.
+        resolved: dict[str, Node] = {}
+        for ext_id, ext_node in unique.items():
+            hits = await self._entity_similarity.search(
+                ext_node,
+                limit=1,
+                threshold=self.entity_resolution_threshold,
+                same_label_only=False,
+            )
+            if hits:
+                resolved[ext_id] = hits[0].node
+
+        if not resolved:
+            return chunk_graphs
+
+        rewritten: dict[str, KnowledgeGraph] = {}
+        for cid, graph in chunk_graphs.items():
+            new_nodes = [resolved.get(n.id, n) for n in graph.nodes]
+            new_rels = [
+                Relationship(
+                    id=r.id,
+                    source=resolved[r.source].id if r.source in resolved else r.source,
+                    target=resolved[r.target].id if r.target in resolved else r.target,
+                    label=r.label,
+                    properties=dict(r.properties),
+                )
+                for r in graph.relationships
+            ]
+            rewritten[cid] = KnowledgeGraph(nodes=new_nodes, relationships=new_rels)
+        return rewritten
+
+    # ------------------------------------------------------------------
     # High-level operations
     # ------------------------------------------------------------------
 
@@ -481,6 +577,8 @@ class GraphRAG:
         chunk_nodes = self.build_chunk_nodes(chunks, chunk_embeddings)
         await self.persist_document_and_chunks(document_node, chunk_nodes)
         chunk_graphs = await self.extract_kg_per_chunk(chunks)
+        if self.resolve_entities_on_ingest:
+            chunk_graphs = await self._resolve_extracted_entities(chunk_graphs)
         await self.persist_entities_and_relationships(chunks, chunk_graphs)
         logger.info("Completed ingestion for %s", path)
 
@@ -511,6 +609,8 @@ class GraphRAG:
         chunk_nodes = self.build_chunk_nodes(chunks, chunk_embeddings)
         await self.persist_document_and_chunks(document_node, chunk_nodes)
         chunk_graphs = await self.extract_kg_per_chunk(chunks)
+        if self.resolve_entities_on_ingest:
+            chunk_graphs = await self._resolve_extracted_entities(chunk_graphs)
         await self.persist_entities_and_relationships(chunks, chunk_graphs)
         logger.info("Completed ingestion for text document %r", title)
 
