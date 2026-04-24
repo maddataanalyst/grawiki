@@ -349,13 +349,14 @@ The main runtime path currently looks like this:
 5. `GraphRAG.build_document_node()` and `GraphRAG.build_chunk_nodes()` attach embeddings to persisted node models.
 6. `GraphRAG.persist_document_and_chunks()` ensures indexes and persists documents, chunks, and `__has_chunk__` relationships.
 7. `GraphRAG.extract_kg_per_chunk()` runs `KnowledgeGraphExtractor.extract(...)` concurrently across chunks.
-8. `GraphRAG.persist_entities_and_relationships()` ensures entity indexes and persists extracted entities, `__mentions__` links, and entity relationships.
-9. `Retriever.fulltext(...)` or `Retriever.vector(...)` executes query-time retrieval; vector queries are embedded in the retrieval layer, not in the DB adapter.
-10. `grawiki.GraphRAG.search()` returns flat `NodeHit` results.
-11. `EntitySimilarityFinder.find_semantic_key_collisions()` detects exact semantic-key duplicates.
-12. `EntitySimilarityFinder.find_collision_candidates()` ranks candidates inside those exact collision groups.
-13. `EntitySimilarityFinder.find_similarity_candidates()` performs the broader matcher-based duplicate scan across persisted entities.
-14. `EntitySimilarityFinder.find_duplicate_candidates()` combines both stages into one duplicate-inspection report.
+8. When `resolve_entities_on_ingest=True`, `GraphRAG._resolve_extracted_entities()` matches freshly-extracted entities against persisted ones via the configured `EntitySimilarityFinder`; hits above `entity_resolution_threshold` cause the extracted node and its relationship endpoints to be rewritten to the persisted node's id so the persistence step reuses existing entities instead of creating duplicates. Skipped entirely when the flag is `False` (the default).
+9. `GraphRAG.persist_entities_and_relationships()` ensures entity indexes and persists extracted entities, `__mentions__` links, and entity relationships.
+10. `Retriever.fulltext(...)` or `Retriever.vector(...)` executes query-time retrieval; vector queries are embedded in the retrieval layer, not in the DB adapter.
+11. `grawiki.GraphRAG.search()` returns flat `NodeHit` results.
+12. `EntitySimilarityFinder.find_semantic_key_collisions()` detects exact semantic-key duplicates.
+13. `EntitySimilarityFinder.find_collision_candidates()` ranks candidates inside those exact collision groups.
+14. `EntitySimilarityFinder.find_similarity_candidates()` performs the broader matcher-based duplicate scan across persisted entities.
+15. `EntitySimilarityFinder.find_duplicate_candidates()` combines both stages into one duplicate-inspection report.
 
 ## Notes For New Agents
 
