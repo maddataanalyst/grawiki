@@ -34,18 +34,9 @@ class KnowledgeGraphExtractorProtocol(Protocol):
 class ExtractedNode(GraphModel):
     """Extractor-facing node without a machine-generated identifier.
 
-    Parameters
-    ----------
-    label : str
-        Ontology type of the node, for example ``Person`` or ``Concept``.
-    name : str
-        Human-readable node name used as the temporary reference key within
-        one extraction result.
-    semantic_key: str
-        A key constructed as the concatenation of node label and shortened name, used to identify nodes with the same label
-        and name across the graph. Should be very short and brief. Example: person_alan-turing, code-snippet_llm-implementation.
-    properties : dict[str, str], optional
-        Short factual properties associated with the node.
+    This transient shape is produced by the LLM extractor before the
+    application assigns durable UUIDs and converts the result into persisted
+    :class:`~grawiki.graph.models.Node` objects.
     """
 
     label: str = Field(
@@ -76,16 +67,9 @@ class ExtractedNode(GraphModel):
 class ExtractedRelationship(GraphModel):
     """Extractor-facing relationship using node names as endpoints.
 
-    Parameters
-    ----------
-    source : str
-        Source node name. It must match one extracted node name exactly.
-    target : str
-        Target node name. It must match one extracted node name exactly.
-    label : str
-        Relationship type expressed as a short verb-like connector.
-    properties : dict[str, str], optional
-        Short factual properties associated with the relationship.
+    Relationship endpoints reference extracted node names within one extraction
+    result and are later rewritten to durable node identifiers during
+    persistence.
     """
 
     source: str = Field(
@@ -109,14 +93,9 @@ class ExtractedRelationship(GraphModel):
 class ExtractedKnowledgeGraph(GraphModel):
     """Extractor-facing graph before machine identifiers are assigned.
 
-    Parameters
-    ----------
-    nodes : list[ExtractedNode], optional
-        Nodes present in the extracted graph. Node names serve as temporary
-        reference keys within one extraction result.
-    relationships : list[ExtractedRelationship], optional
-        Relationships present in the extracted graph. Every endpoint should
-        reference an existing node name.
+    Node names act as temporary reference keys within one extraction result and
+    are later promoted into a persisted
+    :class:`~grawiki.graph.models.KnowledgeGraph`.
     """
 
     nodes: list[ExtractedNode] = Field(default_factory=list)
@@ -158,8 +137,8 @@ class KnowledgeGraphExtractor:
     ----------
     model : str
         Chat model used for structured knowledge extraction.
-    embedder : Embedding
-        Embedding used for entity node vectors. Injected so callers share
+    embedding : Embedding
+        Embedding client used for entity node vectors. Injected so callers share
         one embedding model across the pipeline instead of each component
         constructing its own.
     prompt : str, optional

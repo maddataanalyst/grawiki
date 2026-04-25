@@ -26,23 +26,10 @@ class GraphModel(BaseModel):
 class Node(GraphModel):
     """Graph node representing one concrete entity or concept.
 
-    Parameters
-    ----------
-    id : str
-        Machine-generated identifier unique within the graph.
-    labels : frozenset[str]
-        Ontology labels assigned to the node, for example ``{"Person"}`` or
-        ``{"Concept", "Theory"}``.
-    semantic_key: str
-        A key constructed as the concatenation of node label and shortened name, used to identify nodes with the
-        same label and name across the graph. Should be very short and brief.
-        Example: person_alan-turing, code-snippet_llm-implementation.
-    name : str
-        Human-readable canonical name of the node instance.
-    properties : dict[str, str], optional
-        Short factual properties associated with the node.
-    embedding: list[float]
-        Optional vector embedding associated with the node, for example for retrieval purposes.
+    Field-level descriptions document the persisted schema in detail. The
+    `labels` field supports multi-label entities, while `semantic_key` provides
+    a stable deduplication-oriented identifier derived from the node type and
+    name.
     """
 
     id: str = Field(
@@ -122,20 +109,9 @@ class Node(GraphModel):
 class ChunkNode(Node):
     """Graph node representing one source chunk.
 
-    Parameters
-    ----------
-    id : str
-        Stable identifier of the chunk node.
-    name : str
-        Human-readable chunk name.
-    document_id : str
-        Identifier of the parent document.
-    content : str
-        Raw chunk text.
-    embedding: list[float], optional
-        Optional vector embedding associated with the chunk, for example for retrieval purposes.
-    metadata : dict[str, str], optional
-        Additional chunk metadata.
+    Chunk nodes are system-owned nodes linked back to a parent
+    :class:`DocumentNode` and typically carry both raw chunk text and an
+    embedding for retrieval.
     """
 
     system_label: ClassVar[str] = "__chunk__"
@@ -185,18 +161,8 @@ class ChunkNode(Node):
 class DocumentNode(Node):
     """Graph node representing one source document.
 
-    Parameters
-    ----------
-    id : str
-        Stable identifier of the document node.
-    name : str
-        Human-readable document name, typically the document title.
-    content : str
-        Raw document text.
-    embedding: list[float], optional
-        Optional vector embedding associated with the document, for example for retrieval purposes.
-    metadata : dict[str, str], optional
-        Additional document metadata.
+    Document nodes store the source text and metadata for an ingested document
+    and can also carry a document-level embedding.
     """
 
     system_label: ClassVar[str] = "__document__"
@@ -240,18 +206,8 @@ class DocumentNode(Node):
 class MemoryNode(Node):
     """Graph node representing one stored memory.
 
-    Parameters
-    ----------
-    id : str
-        Stable identifier of the memory node.
-    name : str
-        Human-readable memory title or summary.
-    content : str
-        Stored memory content.
-    creation_date : str, optional
-        ISO 8601 timestamp describing when the memory was created.
-    metadata : dict[str, str], optional
-        Additional memory metadata.
+    Memory nodes capture persisted agent-facing notes or summaries and can be
+    searched and expanded through connected graph context.
     """
 
     system_label: ClassVar[str] = "__memory__"
@@ -272,18 +228,8 @@ class MemoryNode(Node):
 class Relationship(GraphModel):
     """Directed relationship between two graph nodes.
 
-    Parameters
-    ----------
-    id : str
-        Machine-generated identifier unique within the graph.
-    source : str
-        Machine-generated identifier of the source node.
-    target : str
-        Machine-generated identifier of the target node.
-    label : str
-        Relationship type expressed as a short verb-like connector.
-    properties : dict[str, str], optional
-        Short factual properties associated with the relationship.
+    Relationships are persisted with explicit source and target node ids plus a
+    short type label and optional factual properties.
     """
 
     id: str = Field(
@@ -309,13 +255,8 @@ class Relationship(GraphModel):
 class KnowledgeGraph(GraphModel):
     """Knowledge graph consisting of nodes and relationships.
 
-    Parameters
-    ----------
-    nodes : list[Node], optional
-        Nodes present in the graph.
-    relationships : list[Relationship], optional
-        Relationships present in the graph. Every relationship endpoint
-        should reference an existing node identifier.
+    This is the durable in-memory graph container passed between extraction,
+    persistence, and higher-level workflows.
     """
 
     nodes: list[Node] = Field(default_factory=list)

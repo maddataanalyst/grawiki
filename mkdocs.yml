@@ -1,0 +1,79 @@
+site_name: GraWiki
+site_description: Public documentation for GraWiki, an early-stage graph-backed knowledge and memory project for LLM systems.
+site_url: https://grawiki.readthedocs.io/
+repo_url: https://github.com/maddataanalyst/grawiki
+repo_name: maddataanalyst/grawiki
+docs_dir: docs
+strict: true
+
+theme:
+  name: material
+  logo: assets/images/grawiki_icon.png
+  favicon: assets/images/grawiki_icon.png
+
+nav:
+  - Overview: index.md
+  - Concepts: concepts.md
+  - Flows: flows.md
+  - Project Structure: structure.md
+  - API:
+      - API Overview: api/index.md
+      - GraphRAG: api/graphrag.md
+      - Retrieval:
+          - Overview: api/retrieval/index.md
+          - Text Retriever: api/retrieval/text.md
+          - Keyword Path Retriever: api/retrieval/keywords.md
+      - Graph Models:
+          - Models: api/graph/models.md
+          - Extraction (Advanced): api/graph/extraction.md
+      - Database:
+          - Abstractions: api/db/base.md
+          - FalkorDB Adapter (Advanced): api/db/falkordb.md
+      - Similarity and Deduplication:
+          - Overview: api/similarity/index.md
+          - Similarity Finder: api/similarity/finder.md
+          - Matchers: api/similarity/matchers.md
+          - Result Models: api/similarity/models.md
+          - Deduplication Helpers: api/similarity/deduplication.md
+  - References: references.md
+
+plugins:
+  - search
+  - mermaid2
+  - copy-to-llm
+  - autorefs
+  - bibtex:
+      bib_file: docs/references.bib
+      bib_by_default: true
+  - mkdocstrings:
+      handlers:
+        python:
+          paths:
+            - src
+          options:
+            docstring_style: numpy
+            filters:
+              - "!^_"
+            inherited_members: true
+            members_order: source
+            separate_signature: true
+            show_root_heading: true
+            show_root_toc_entry: false
+            show_source: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - footnotes
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:mermaid2.fence_mermaid_custom
+  - tables
+  - toc:
+      permalink: true

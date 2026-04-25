@@ -1,16 +1,101 @@
-# GraWiki
+<p align="center">
+  <img src="grawiki_text_logo.png" alt="GraWiki" width="460">
+</p>
 
-This repositoy contains a Graph-Wiki (GraWiki) -- a lightweight implementation of fusion of two concepts:
+GraWiki is an early-stage open source Python project for graph-backed knowledge
+extraction, retrieval, and agent memory.
 
-1. GraphRAG
-2. and Andrej Karpathy's "LLM Wiki" agentic memory.
+It combines two closely related ideas:
 
-The main idea is to use a graph database as the "memory" of an LLM agent, and to use the LLM to extract structured knowledge from text and store it in the graph. The graph can then be queried by the LLM to answer questions, generate summaries, or perform other tasks.
+1. GraphRAG-style ingestion and retrieval over extracted entities and relationships.
+2. Andrej Karpathy's "LLM Wiki" style memory, where prior agent work is stored as durable graph state instead of only transient prompt context.
 
-Two sets of functionalities are available here:
+The project uses an LLM to turn text into structured graph data, persists that
+data in a graph database, and then reuses the same graph for search, memory
+recall, similarity inspection, and duplicate-entity cleanup. The goal is not
+just classic document RAG, but a more durable knowledge organization layer for
+LLM systems.
 
-1. Knowledge graph extraction from text and storing it in the graph database. Later -- it is possible to query the graph database to retrieve relevant information for a given query, and use it to answer questions or generate summaries.
-2. Storage and retrieval of "agentic memories" -- a result of previous queries + RAG results + agent reasoning and answer.
+## What GraWiki does
+
+GraWiki currently focuses on two main workflows.
+
+1. Document-to-graph ingestion.
+   Source documents are read, chunked, embedded, processed by an LLM extractor,
+   and persisted as document nodes, chunk nodes, entity nodes, and typed
+   relationships.
+2. Graph-backed agent memory.
+   Agent outputs can be stored as dedicated `__memory__` nodes, linked back into
+   the graph, and later recalled together with connected context.
+
+This gives the project a hybrid shape:
+
+- part GraphRAG ingestion pipeline,
+- part retrieval layer over graph-backed context,
+- part persistent memory store for agent interactions,
+- part duplicate-entity inspection and deduplication toolkit.
+
+Current capabilities include:
+
+- reading source documents and splitting them into chunks,
+- extracting entities and relationships from chunk text,
+- persisting documents, chunks, entities, relationships, and memories in a graph database,
+- retrieving graph-backed context with vector and full-text search,
+- expanding graph context around matched entities and memories,
+- inspecting duplicate candidates through semantic-key collision checks and pluggable similarity matchers,
+- merging duplicate entities through the facade-level deduplication workflow.
+
+## Project layout
+
+The repository is organized around a small number of major areas.
+
+### Top-level folders
+
+- `src/grawiki/`: main application package.
+- `tests/`: pytest suite for the facade, retrieval layer, graph models, extraction, query generation, and FalkorDB adapter.
+- `docs/`: public MkDocs documentation, including narrative pages and generated API reference pages under `docs/api/`.
+- `agent_tools/`: internal contributor and agent-facing guides, plans, and repository maps such as `agent_tools/CODEMAP.md`.
+- `notebooks/`: exploratory and debugging material rather than the main product surface.
+
+### Main package structure
+
+- `grawiki.core`: shared source-data types and the embedding protocol.
+- `grawiki.doc_processing`: document loading and chunking.
+- `grawiki.graph`: graph schema, extraction, and prompts.
+- `grawiki.db`: backend-agnostic database interfaces plus the FalkorDB implementation.
+- `grawiki.retrieval`: query-time retrieval strategies.
+- `grawiki.similarity`: duplicate-candidate inspection, similarity matchers, and deduplication helpers.
+- `grawiki.rag`: the `GraphRAG` facade that ties ingestion, retrieval, memory, and deduplication together.
+
+### Core entrypoints
+
+- `grawiki.GraphRAG`: the main public facade.
+- `src/grawiki/rag/graph_rag.py`: end-to-end ingestion, search, recall, memory, and deduplication flows.
+- `src/grawiki/graph/models.py`: the canonical graph schema.
+- `src/grawiki/db/base.py`: the backend contract.
+- `src/grawiki/similarity/`: the duplicate-inspection and merge-support surface.
+
+## Runtime flow
+
+At a high level, GraWiki works like this:
+
+1. A source document is loaded and split into chunks.
+2. Documents and chunks are embedded and persisted.
+3. Each chunk is sent to an LLM extractor to produce nodes and relationships.
+4. Extracted entities can optionally be resolved against existing persisted entities during ingest.
+5. The resulting graph is stored and becomes available for retrieval, memory linking, and later deduplication.
+6. Queries are handled through configured retrievers that combine text search, vector search, and graph-context expansion.
+7. Memory recall searches `__memory__` nodes first, then expands linked graph context around them.
+
+## Documentation
+
+Public documentation lives in `docs/` and is built with MkDocs Material.
+It includes:
+
+- conceptual background,
+- flow documentation,
+- a project structure page,
+- generated API reference pages centered on `GraphRAG`.
 
 ## Development
 
@@ -30,4 +115,16 @@ Run all configured checks manually:
 
 ```bash
 uv run pre-commit run --all-files
+```
+
+Install the optional documentation toolchain:
+
+```bash
+uv sync --extra docs
+```
+
+Build the public documentation site locally:
+
+```bash
+uv run mkdocs build --strict
 ```

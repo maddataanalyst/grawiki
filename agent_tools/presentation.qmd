@@ -1,0 +1,666 @@
+---
+title: Networked Narratives
+subtitle: Leveraging LLMs and GNNs for Next-Generation Knowledge Graphs
+format: 
+    clean-revealjs:
+        self-contained: true
+        footer: "Filip Wójcik | NeuraSYS | Wroclaw University of Economics"
+        background-size: contain
+        background-position: center
+        background-repeat: no-repeat
+        transition: fade
+
+author:
+  - name: Filip Wójcik, Ph.D.
+    roles: Senior Data Scientist, Researcher
+    url: https://filip-wojcik.com
+    email: ds@filip-wojcik.com
+    orcid: 0000-0001-5938-7260
+    affiliation:
+      - name: Wroclaw University of Economics
+        url: https://ue.wroc.pl/en/
+      - name: Piwik PRO
+        url: https://filip-wojcik.com
+date: last-modified
+---
+
+# Agenda
+
+1. Challenges in structural reasoning with LLMs.
+2. Fundamentals of Graph Neural Networks (GNNs).
+3. Techniques for extracting knowledge graphs from text using LLMs.
+4. Integrating LLM-extracted graphs with GNNs.
+5. Case study: Wikipedia article analysis with HeXtractor.
+
+# Introduction
+
+## The Challenge of Structural Reasoning
+
+Large Language Models excel at text generation but struggle with structural relationships between entities.
+
+This limitation manifests as:
+
+- **Hallucinations** when processing complex knowledge domains;
+- **Missed analytical insights** in interconnected data;
+- **Inability to leverage graph topology** for reasoning.
+
+## Graph Neural Networks: A Silent Revolution
+
+::: {.columns}
+::: {.column width="60%"}
+Since 2017, Graph Neural Networks have undergone substantial architectural advances:
+
+- **Message-passing** (MPNN) framework formalization;
+- **Knowledge graph integration** methods were introduced;
+- **Heterogeneous graph processing** capabilities were significantly expanded.
+:::
+
+::: {.column width="40%"}
+![](./figures/concept_graph.png){width=90%}
+:::
+:::
+
+**Despite this progress, GNNs remain underutilized in mainstream AI systems compared to LLMs.**
+
+## Ongoing research
+
+::: {#fig-text2graph layout-ncol=2 }
+
+![KG and LLMs in action](./figures/manning.png){#fig-manning}
+
+![Neo4j Graph DS](./figures/neo4j.gif){#fig-neo4j}
+
+Recent publications and libraries utilizing Knowledge Graphs and LLMs for structured reasoning.
+:::
+
+# GNN Fundamentals
+
+## Graph Neural Networks Overview
+
+::: {.larger}
+GNNs process structured data by learning representations of nodes and edges through iterative message passing.
+
+**Input requirements:**
+
+- Node attribute matrices for each node type, $\mathbf{X}_v \in \mathbb{R}^{|V| \times d_v}$
+- Edge attribute matrices for relationship types, $\mathbf{E}_{v,u} \in \mathbb{R}^{|E| \times d_e}$
+- Adjacency structures defining connectivity, typically as **adjacency lists** or **edge index tensors**, $\mathbf{A} \in \mathbb{N}^{2 \times |E|}$
+
+The architecture transforms discrete graph structures into continuous embeddings suitable for downstream tasks.
+:::
+
+![](./figures/gnn_overview.png){fig-align="center"}
+
+::: {.smaller}
+Jure Leskovec, Stanford CS224W: Machine Learning with Graphs, http://cs224w.stanford.edu
+:::
+
+
+## Message-Passing Architecture {.smaller}
+
+::: {.columns}
+::: {.column width="60%"}
+**Iterative Process (K steps):**
+
+1. **Neighborhood Collection**: Identify direct neighbors $\mathcal{N}(v)$ for each vertex $v$
+2. **Message Construction**: Generate messages from neighbors using learned mappings
+3. **Aggregation**: Combine neighbor messages (mean, sum, attention mechanisms)
+4. **Node Update**: Integrate aggregated information with current node representation
+:::
+
+::: {.column width="40%"}
+![](./figures/mpnn_architecture.png)
+:::
+:::
+
+Each iteration enables nodes to incorporate information from progressively distant neighborhoods, propagating structural patterns throughout the network.
+
+## Message Passing Visualization
+
+![](./figures/mpnn_architecture.png)
+
+
+## Heterogeneous Graphs
+
+**Heterogeneous graphs** represent a specialized case where nodes and edges possess distinct types and properties.
+
+**Formal Definition:**
+
+$$G = (V, E, A, R, \phi, \psi)$$
+
+
+::: {.small}
+Where
+
+* $V$ is the set of vertices (nodes);
+* $E$ is the set of edges;
+* $A$ is the set of node types;
+* $R$ is the set of relationship types;
+* $\phi: V \rightarrow A$ maps vertices to types;
+* $\psi: E \rightarrow R$ maps edges to relationship types.
+:::
+This heterogeneity requires specialized GNN architectures that handle varying attribute dimensions across node and edge types.
+
+## Heterogeneous Graphs Visualization
+
+![](./figures/hetero_graph_visualization.png)
+
+::: {.small}
+[Teaching old labels new tricks in heterogeneous graphs, Google Research](https://research.google/blog/teaching-old-labels-new-tricks-in-heterogeneous-graphs/) 
+:::
+
+## Knowledge Graphs
+
+:::{.callout-tip}
+## Knowledge graphs vs heterogeneous graphs
+
+- **Knowledge graph**: 
+  - Curated semantic entities and relations (often an informal term).
+  - Often represented as ontology or RDF/property graph.
+- **Heterogeneous graph**: 
+    - GNN term for graphs with multiple node/edge types.
+    - Tensor (numbers) based.
+- **Similarity**: both feature various types of nodes and edges.
+- The terms are sometimes used interchangeably in literature.
+:::
+
+![](./figures/neo4jkg.png){width=50% fig-align="center"}
+
+::: {.small .text-center}
+[Neo4j: What Is a Knowledge Graph?](https://neo4j.com/blog/knowledge-graph/what-is-knowledge-graph/)
+:::
+
+## GNN Tasks
+
+**Primary Applications:**
+
+![](./figures/gnn_tasks.png){fig-align="center"}
+
+Each task leverages learned embeddings that encode both node attributes and topological position within the network.
+
+# Changing text to graph
+
+## The Compatibility Gap
+
+Standard GNN architectures require numerical inputs, while knowledge exists predominantly in unstructured text.
+
+**Traditional NLP Approaches:**
+
+- Dependency parsing generates syntactic graphs
+- Libraries like SpaCy and NLTK enable sentence-level decomposition
+- Focus typically limited to grammatical relationships
+
+![](./figures/displacy.png){width=60%}
+
+## Syntactic Tree Parsing Visualization
+
+![](./figures/syntax_tree.png)
+
+::: {.small}
+[Syntax Tree - Natural Language Processing, Geeks for geeks](https://www.geeksforgeeks.org/machine-learning/syntax-tree-natural-language-processing/)
+:::
+
+## Knowledge Graph Requirements
+
+Modern analysis demands high-level semantic connections spanning multiple sentences and documents.
+
+**Key Differences from Syntactic Parsing:**
+
+- **Entity relationships** rather than grammatical dependencies
+- **Cross-document connections** and conceptual hierarchies
+- **Domain-specific relationship types**
+- **Handling of implicit and indirect connections**
+
+This semantic extraction challenge represents the bridge between unstructured text and GNN-compatible structures.
+
+# LLMs for Knowledge Graph Extraction
+
+## LLM Capabilities
+
+::: {columns}
+
+::: {.column width="80%"}
+Recent research demonstrates that LLMs with extended context windows can extract semantic graph elements through structured prompting.
+
+**Extraction Process:**
+
+1. 🛢️ Define target schema (node types, relationship types)
+2. 👤 Instruct LLM to identify entities and connections
+3. { } Enforce structured output formatting
+4. ✅ Validate consistency across extracted elements
+
+The approach leverages LLMs' understanding of domain knowledge and relationship semantics.
+:::
+
+::: {.column width="20%"}
+![](./figures/langchain-color.png){width=90%}
+![](./figures/crew-ai.png){width=90%}
+:::
+:::
+## Implementation Approaches
+
+::: {.columns}
+::: {.column width="50%"}
+
+::: {.larger}
+**Custom Prompting:**
+
+```python
+class Node(BaseModel):
+    id: str
+    node_type: str
+
+class Edge(BaseModel):
+    source_node_id: str
+    target_node_id: str
+    edge_type: str
+
+class Graph(BaseModel):
+    nodes: list[Node]
+    edges: list[Edge]
+
+llm_with_structured_output = llm.with_structured_output(Graph)
+system_prompt = SystemPrompt("""
+You are a helpful assistant for extracting structured knowledge graphs from text. 
+Your task is to read the provided text and convert it into a graph structure.
+Follow the schema below:
+        For each input, identify and extract:
+        - Concepts, disciplines, and the relationships between them
+        - People, organizations, and places mentioned in the text
+        - Associations and interactions among these entities
+""")
+...
+```
+:::
+:::
+
+::: {.column width="50%"}
+**LangChain Components:**
+
+- `LLMGraphTransformer` provides structured extraction
+- `GraphDocument` encapsulates results
+- Experimental features under active development
+:::
+:::
+
+**Both approaches transform raw text into semantic triples representing domain knowledge.**
+
+## LLM Extraction Outputs
+
+::: {.columns}
+
+::: {.column width="50%"}
+### Example nodes
+
+```python
+Node(
+    id='Machine learning', 
+    node_type='Concept')
+
+Node(
+    id='AI', 
+    node_type='Concept')
+
+Node(
+    id='Deep learning', 
+    node_type='Concept')
+```
+:::
+::: {.column width="50%"}
+
+### Example edges
+```python
+# Example edges
+Edge(source=Node(
+        id='Machine learning', 
+        type='Concept'), 
+    target=Node(
+        id='Artificial intelligence',
+         type='Concept'),
+    type='is_subfield_of')
+
+Edge(source=Node(
+        id='Deep learning', 
+        type='Concept'), 
+    target=Node(
+        id='Machine learning',
+         type='Concept'),
+    type='is_subfield_of')
+```
+:::
+:::
+
+## LLM Extraction Outputs Visualization
+
+![](./figures/concept_graph.png){fig-align="center"}
+
+
+## Limitations and Considerations
+
+**Extraction Challenges:**
+
+- 🎲 Model stochasticity affects reproducibility;
+- 🏅 Quality varies with model capability and size;
+- 💬 Requires careful prompt engineering for domain specificity;
+- 🧩 Entity normalization and disambiguation needed;
+- 🔄 Relationship consistency is not guaranteed.
+
+:::{.callout-tip}
+## Model selection
+Standard LLM tuning and selection techniques can help (e.g., temperature ≈ 0 for deterministic outputs, structured output enforcement, etc.).
+:::
+
+
+# LLM-GNN Integration Architecture
+
+## Processing Pipeline
+
+::: {#fig-pipeline layout-ncol=2 }
+![Pipeline](./figures/pipeline.svg){#fig-pipeline-concept height=500px}
+
+![Pipeline visualization](./figures/hextractor_flow_img.png){#fig-hextractor-flow}
+
+From text to knowledge graph; from knowledge graph to graph neural network.
+
+:::
+
+# HeXtractor: Automation Framework
+
+## HeXtractor Library
+
+:::: {.columns}
+::: {.column width="70%"}
+
+::: {.larger}
+
+HeXtractor (created together with **Marcin Maleczeski** @ Piwik PRO) automates heterogeneous graph construction from both textual and tabular sources.
+
+**Key Features:**
+
+- Converts text to `LangChain GraphDocuments`
+- Transforms `LangChain GraphDocuments` to graph neural network format
+- Handles node ID mapping and validation
+- Supports multiple encoding strategies
+- Provides visualization capabilities
+:::
+:::
+
+::: {.column width="30%"}
+
+![](./figures/pyg_logo.png){height=20%}
+![](./figures/langchain-color.png){height=20%}
+
+:::
+
+::::
+
+
+::: {.small}
+[Wójcik et al., (2025). HeXtractor: Extracting Heterogeneous Graphs from Structured and Textual Data for Graph Neural Networks. Journal of Open Source Software, 10(110), 8057](https://doi.org/10.21105/joss.08057)
+
+{{< fa brands github >}} Github: [https://github.com/maddataanalyst/hextractor](https://github.com/maddataanalyst/hextractor)
+:::
+
+::: {.smaller}
+1. Wójcik, F. (2025). Money Laundering Detection with Multi-Aggregation Custom Edge GIN. Journal of Data Science, 1-19.
+2. Wójcik, F. (2024). An analysis of novel money laundering data using heterogeneous graph isomorphism networks. FinCEN files case study. Econometrics. Ekonometria. Advances in Applied Data Analytics, 28(2), 32-49.
+:::
+
+## HeXtractor overview
+
+![](./figures/hextractor_use_cases.png)
+
+# HeXtractor overview - code
+
+```python
+
+# Step 1: Given a text...
+text = """Filip Wójcik and Marcin Malczewski are data scientists, 
+who developed HeXtractor. It is a library that helps 
+in extracting heterogeneous knowledge graphs 
+from various data sources. Heterogeneous knowledge graphs are graphs, 
+that contain different types of nodes and edges."""
+
+docs = [Document(page_content=text)]
+
+# Step 2: Use LLM to extract knowledge graph
+llm = ChatOpenAI(base_url=base_url, api_key=api_key)
+llm_graph_transformer = LLMGraphTransformer(llm=llm)
+
+kknowledge_graph = await llm_graph_transformer.aconvert_to_graph_documents(docs)  
+
+# Step 3: Convert to graph neural network format
+hetero_data, node_mapping = hextractor.convert_graph_document_to_hetero_data(knowledge_graph)
+
+# Step 3: Visualize, train GNN, etc.
+visualization = viz.VisualizationBuilder.build_visualization(
+  simple_viz_cfg, 
+  hetero_data, 
+  mapped_node_names)
+
+gnn = GNN(hetero_data)
+...
+```
+
+# Case Study: Wikipedia Analysis
+
+## Experimental Setup
+
+::: {.columns}
+::: {.column width="60%"}
+
+::: {.larger}
+**Objective:** Extract conceptual relationships from machine learning literature and generate structure-aware embeddings.
+
+**Data Sources:**
+
+Wikipedia articles on:
+
+1. Machine Learning
+2. Neural Networks
+3. Deep Learning
+
+**Target Tasks:** 
+
+1. Link prediction for `is_subfield_of` relationships between ML concepts
+2. Embedding visualization for concepts and researchers.
+
+**Model Configuration:** GPT-4.1-mini.
+:::
+:::
+::: {.column width="40%"}
+![](./figures/wikipedia_logo.jpg){width=90%}
+:::
+:::
+
+## 1. Text ➡️ 2. Knowledge Graph via LLM
+
+::: {#fig-text2graph layout-ncol=2 }
+
+![Wikipedia article](./figures/wikipedia_txt.png){#fig-wikipedia-txt height=50%}
+
+![Semantic graph](./figures/hextractor_graph.png){#fig-semantic-graph}
+
+::: {.small}
+Wikipedia article transformed into knowledge graph via LLM.
+:::
+:::
+
+
+## 2. Knowledge graph ➡️ 3. Heterogeneous Graph
+
+::: {.columns}
+
+::: {.column width="60%"}
+
+::: {.larger}
+**HeteroData Structure**
+
+1. Node types: concept, person, organization
+2. Each node of type *t* has numerical attribute matrix $\mathbf{X}_{v}^{t} \in \mathbb{R}^{|V_t| \times d_t}$
+3. Each relationship type $(t_u, r, t_v)$ has edge index tensor $\mathbf{E}_{t_u, r, t_v} \in \mathbb{N}^{2 \times |E_{t_u, r, t_v}|}$
+:::
+:::
+
+::: {.column width="40%"}
+
+```python
+HeteroData(
+  concept={ x=[40, 16] },
+  person={ x=[10, 8] },
+  organization={ x=[8, 4] },
+  (concept, is_subfield_of, concept)={ 
+    edge_index=[2, 16]
+},
+  (concept, is_model_used_in, concept)={ 
+    edge_index=[2, 10] 
+},
+  (person, contributed_to, concept)={ 
+    edge_index=[2, 6] 
+},
+  ...
+)
+```
+:::
+:::
+
+The extraction identified 40 distinct concepts with 16 hierarchical relationships suitable for GNN training.
+
+
+##  3. Heterogeneous Graph ➡️ 4. GNN (link pred.)
+
+::: {.columns}
+::: {.column width="50%"}
+
+::: {.larger}
+**Model Configuration:**
+
+- GraphSAGE (2 layers, 16 hidden dim);
+- Link prediction with negative sampling;
+- Graph split for train/validation/test.
+
+**Training Setup**
+
+- Supervised learning: predicting positive edges
+- Negative sampling for nonexistent edges
+- K-step neighborhood sampling for each node
+
+:::
+
+:::
+
+::: {.column width="50%"}
+![](./figures/training_results.png)
+:::
+:::
+
+The network successfully distinguished true connections from negative samples, demonstrating effective learning of structural patterns.
+
+## GNN structure
+
+![](./figures/SimpleCNN.svg)
+
+## GNN code
+
+
+::: {.larger}
+```python
+GraphModule(
+  (convs): ModuleList(
+    (0): ModuleDict(
+      (Concept__is_subfield_of__Concept): SAGEConv((-1, -1), 16, aggr=['sum', 'mean'])
+      (Person__coined_term_for__Concept): SAGEConv((-1, -1), 16, aggr=['sum', 'mean'])
+      ...
+      (Organization__used_for_application__Concept): SAGEConv((-1, -1), 16, aggr=['sum', 'mean'])
+      (Concept__rev_coined_term_for__Person): SAGEConv((-1, -1), 16, aggr=['sum', 'mean'])
+      (Concept__rev_used_for_application__Organization): SAGEConv((-1, -1), 16, aggr=['sum', 'mean'])
+    )
+  )
+  (act): ModuleDict(
+    (Concept): ReLU()
+    (Person): ReLU()
+    ...
+    (Organization): ReLU()
+  ) 
+  (jk): ModuleDict(
+    (Concept): JumpingKnowledge(cat)
+    (Person): JumpingKnowledge(cat)
+    ...
+    (Organization): JumpingKnowledge(cat)
+  )
+  (lin): ModuleDict(
+    (Concept): Linear(in_features=16, out_features=16, bias=True)
+    (Person): Linear(in_features=16, out_features=16, bias=True)
+    (Organization): Linear(in_features=16, out_features=16, bias=True)
+  )
+)
+```
+:::
+
+## Learned Embeddings: Concepts
+
+![](./figures/concept_embeddings.png){width=70% fig-align="center"}
+
+PCA visualization reveals meaningful clustering: classical ML techniques separate from deep learning methods, with general concepts occupying intermediate regions.
+
+## Learned Embeddings: Researchers
+
+![](./figures/people_embedding.png){width=70% fig-align="center"}
+
+Neural network researchers (Hinton, Hopfield, Hebb) cluster together, while AI pioneers distribute across the space reflecting broader domain influence.
+
+# Conclusions
+
+## Where and How to Use It?
+
+**Applications:**
+
+1. 💡 **Company knowledge extraction** and structuring;
+2. 🔍 **Systematic analysis of sources** (e.g., literature reviews, overviews);
+3. 🏷️ **Entity extraction and similarity search** based on structural embeddings;
+4. ❓ **Domain-specific question answering** with structural grounding;
+5. 🧺 **Enhanced recommendation systems** leveraging graph structure.
+
+
+::: {.callout-tip}
+# Recommended flow
+
+ **STAGE 1** Text ➡️ LLM extraction ➡️ Knowledge Graph (text-based)
+ 
+ **STAGE 2** Knowledge Graph ➡️ Hetero Graph (numerical) ➡️ GNN training ➡️ Downstream tasks
+:::
+
+
+## Key Findings
+
+::: {.larger}
+
+💡 **Methods and techniques**
+
+- 📄 **Text-to-knowledge-graph transformation** is feasible using LLMs;
+- 🧠 **GNN training** on LLM-extracted graphs enables link prediction after numerical encoding;
+- 🗺️ **Structure-aware embeddings** capture semantic relationships missed by text-only approaches.
+
+🎓 **Research Directions**
+
+- 🤖 **Foundation models** for:
+  - Knowledge graph reasoning (Galkin et al., 2023)
+  - Domain-specific graph classification (Zhao et al., 2024)
+- 🛡️ **Reduced hallucination** through structural constraints (Zhao et al., 2024)
+- ✨ **Enhanced reasoning** with structured data support (Zhou et al., 2025)
+
+:::
+
+---
+
+## References {.smaller}
+
+- Galkin, M., et al. (2023). Towards foundation models for knowledge graph reasoning. arXiv:2310.04562
+- Gillani, K., et al. (2024). Knowledge graph extraction from textual data using LLM. Proceedings of SiKDD 2024
+- Hamilton, W. L. (2020). Graph representation learning. Synthesis Lectures on AI and ML, 14(3), 1-159
+- Huang, X., et al. (2025). How expressive are knowledge graph foundation models? arXiv:2502.13339
+- Wójcik, F., & Malczewski, M. (2025). HeXtractor: Extracting heterogeneous graphs for GNNs. JOSS, 10(110), 8057
+- Zhao, J., et al. (2024). GraphAny: A foundation model for node classification. arXiv:2405.20445
+- Zhou, Z., et al. (2025). Landscape of thoughts: Visualizing LLM reasoning. arXiv:2503.22165
+
+# Thank You!

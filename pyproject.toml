@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "grawiki"
 version = "0.1.0"
-description = "Add your description here"
+description = "Graph-backed knowledge extraction and agent memory for LLM systems"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -15,6 +15,18 @@ dependencies = [
     "pydantic-ai-slim[openai,openrouter]>=1.84.1",
     "rapidfuzz>=3.14.5",
     "unstructured>=0.22.21",
+]
+
+[project.optional-dependencies]
+docs = [
+    "mkdocs>=1.6.1",
+    "mkdocs-autorefs>=1.4.2",
+    "mkdocs-bibtex>=4.4.0",
+    "mkdocs-copy-to-llm>=0.2.0",
+    "mkdocs-material>=9.6.20",
+    "mkdocs-mermaid2-plugin>=1.1.1",
+    "mkdocstrings[python]>=0.30.1",
+    "pymdown-extensions>=10.15",
 ]
 
 [tool.ruff]

@@ -1,4 +1,4 @@
-"""Retrieval strategy layer — owns the embedder on the query path."""
+"""Text retrieval strategy layer that owns query-side embedding."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ class TextRetriever(Retriever):
     ----------
     db : GraphDB
         Storage engine adapter used for raw search primitives.
-    embedder : Embedding
-        Shared embedder instance. The same instance should be reused by
+    embedding : Embedding
+        Shared embedding client instance. The same instance should be reused by
         the ingestion path to avoid loading the model twice.
     """
 

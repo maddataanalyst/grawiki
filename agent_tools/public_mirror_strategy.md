@@ -14,7 +14,7 @@
 
 1. **No history leakage.** Private commit messages, branch names, author emails, SHAs must not appear on the public remote.
 2. **Curated commits.** Each public sync is one commit with a message the developer writes for that sync (release-notes style). Private fine-grained history is intentionally flattened.
-3. **File-level filtering.** Some tracked files must never appear publicly: `AGENTS.md`, `docs/TODOS.md`, `notebooks/` (including `local_falkor.db`, `debug.py`, `debug.ipynb`, `experimental_data/`), `docs/similar_entities_usage_scenarios.md`, `docs/extraction_speedup_plan.md`, `docs/public_mirror_strategy.md` (these three plan docs are internal planning, not user-facing docs), `.claude/` if it exists, any `.env*`, `.venv/`, `__pycache__/`.
+3. **File-level filtering.** Some tracked files must never appear publicly: `AGENTS.md`, `agent_tools/TODOS.md`, `notebooks/` (including `local_falkor.db`, `debug.py`, `debug.ipynb`, `experimental_data/`), `agent_tools/similar_entities_usage_scenarios.md`, `agent_tools/extraction_speedup_plan.md`, `agent_tools/public_mirror_strategy.md` (these three plan docs are internal planning, not user-facing docs), `.claude/` if it exists, any `.env*`, `.venv/`, `__pycache__/`.
 4. **Incremental.** The developer syncs "occasionally" — once every few commits to weeks. The workflow must be fast enough to run ad-hoc (`./scripts/sync_public.sh "Add vector entity similarity"`).
 5. **Safe defaults.** The script must never force-push over history or touch `origin`. It only touches `public`.
 6. **No second working copy.** The worktree used during sync is ephemeral (created and removed by the script).
@@ -70,10 +70,10 @@ Create `.publicignore` at the repo root with the following (adjust if some items
 # Internal planning and agent instructions
 AGENTS.md
 CLAUDE.md
-docs/TODOS.md
-docs/similar_entities_usage_scenarios.md
-docs/extraction_speedup_plan.md
-docs/public_mirror_strategy.md
+agent_tools/TODOS.md
+agent_tools/similar_entities_usage_scenarios.md
+agent_tools/extraction_speedup_plan.md
+agent_tools/public_mirror_strategy.md
 
 # Exploratory / debug material
 notebooks/
@@ -338,10 +338,10 @@ Add missing excludes or remove over-eager ones before running the first sync.
 Open the public repo in a browser and inspect the tree. Confirm:
 - `AGENTS.md` is **absent**.
 - `notebooks/` is **absent**.
-- `docs/TODOS.md` and the three plan docs are **absent**.
+- `agent_tools/TODOS.md` and the three plan docs are **absent**.
 - `src/grawiki/` is **present**.
 - `tests/` is **present**.
-- `docs/CODEMAP.md`, `README.md`, `pyproject.toml` are **present**.
+- `agent_tools/CODEMAP.md`, `README.md`, `pyproject.toml` are **present**.
 - The commit log shows exactly **one commit** with your message.
 
 - [ ] **Step 3: Run a second sync immediately**

@@ -65,7 +65,7 @@ The structural win (batched cross-chunk embedding) is the biggest lever. Concurr
 - **Modify** `notebooks/debug.ipynb` — drop the `embedding=embedding` argument from the `KnowledgeGraphExtractor` instantiation cell.
 - **Modify** `tests/graph/test_extraction.py` — update tests to reflect the new "embeddings off by default" behavior; add a test that verifies nodes come out with empty embeddings when `embedding=None`.
 - **Modify** `tests/rag/test_graph_rag.py` — add a test verifying the cross-chunk batched embedding step (one `embed_documents` call covering all unique names across all chunks).
-- **Modify** `docs/CODEMAP.md` — reflect the responsibility shift (extractor becomes pure LLM; orchestrator owns embedding attachment).
+- **Modify** `agent_tools/CODEMAP.md` — reflect the responsibility shift (extractor becomes pure LLM; orchestrator owns embedding attachment).
 
 ---
 
@@ -441,7 +441,7 @@ git commit -m "perf(rag): batch entity embeddings across chunks"
 
 **Files:**
 - Modify: `notebooks/debug.ipynb`
-- Modify: `docs/CODEMAP.md`
+- Modify: `agent_tools/CODEMAP.md`
 
 - [ ] **Step 1: Update the notebook**
 
@@ -449,14 +449,14 @@ In `notebooks/debug.ipynb`, the cell that constructs `KnowledgeGraphExtractor` c
 
 - [ ] **Step 2: Update CODEMAP**
 
-In `docs/CODEMAP.md`, under `src/grawiki/graph/extraction.py`, clarify that the extractor is now pure LLM extraction and emits nodes with empty embeddings — `GraphRAG.extract_kg_per_chunk` attaches embeddings in one batched call post-extraction. Add a sentence under `src/grawiki/rag/graph_rag.py` documenting the new `_embed_entity_nodes_across_chunks` helper in the data-flow overview.
+In `agent_tools/CODEMAP.md`, under `src/grawiki/graph/extraction.py`, clarify that the extractor is now pure LLM extraction and emits nodes with empty embeddings — `GraphRAG.extract_kg_per_chunk` attaches embeddings in one batched call post-extraction. Add a sentence under `src/grawiki/rag/graph_rag.py` documenting the new `_embed_entity_nodes_across_chunks` helper in the data-flow overview.
 
 Also update the Data Flow Overview section: between the current step 7 (extract) and step 8 (resolve), insert a new step "7.5 `GraphRAG._embed_entity_nodes_across_chunks` attaches entity embeddings in one batched API call across all chunks". Renumber downstream steps.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add notebooks/debug.ipynb docs/CODEMAP.md
+git add notebooks/debug.ipynb agent_tools/CODEMAP.md
 git commit -m "docs: update CODEMAP and notebook for extractor/embedding split"
 ```
 
@@ -498,7 +498,7 @@ This is usually a ~50–100 ms per-call saving at best. Low confidence it matter
 
 - **Concurrency hides rate-limit errors.** When bumping `max_workers`, watch for HTTP 429. Gracefully retrying 429 is out of scope — for now, if you hit it, drop the worker count.
 - **Benchmarks are noisy.** Provider latency varies by minute and time of day. Always average 3+ runs and be skeptical of sub-10% improvements.
-- **`DeprecationWarning` on the old extractor signature** is explicit but silent by default. A careful notebook user might miss it. Mention the deprecation in `docs/CODEMAP.md` under the extractor section so future agents are aware.
+- **`DeprecationWarning` on the old extractor signature** is explicit but silent by default. A careful notebook user might miss it. Mention the deprecation in `agent_tools/CODEMAP.md` under the extractor section so future agents are aware.
 - **Order of operations.** The pipeline becomes: extract (parallel LLM) → batch-embed entities (single call) → resolve (Scenario A) → persist. All three post-extraction steps depend on the preceding one's output. Keep them sequential; do not parallelize across them.
 - **Tests with stub embeddings.** `ConcurrencyTrackingExtractor` and `StaticExtractor` in `tests/rag/test_graph_rag.py` return nodes with preset embeddings. The `_embed_entity_nodes_across_chunks` helper skips nodes that already have a non-empty `embedding`, so these stubs continue to work as-is. Document this contract on the helper's docstring so future test-stub authors don't get surprised.
 - **Benchmark corpus is public?** `benchmarks/input.txt` will be committed. Do not use a document containing secrets or copyrighted material.

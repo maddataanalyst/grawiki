@@ -808,20 +808,22 @@ class GraphRAG:
         *,
         limit: int = 10,
     ) -> list[NodeHit]:
-        """Search documents, chunks, and entities.
+        """Aggregate results from the configured retrievers.
 
         Parameters
         ----------
         query : str
             Raw user query text.
         limit : int, optional
-            Maximum number of results per node family.
+            Maximum number of final hits returned after combining retriever
+            outputs.
 
         Returns
         -------
         list[NodeHit]
-            Flat, deduplicated search hits across documents, chunks, and
-            entities.
+            Flat, deduplicated search hits across the configured retrievers.
+            With the default retriever set this typically includes chunk,
+            memory, and keyword-expanded entity results.
 
         Raises
         ------

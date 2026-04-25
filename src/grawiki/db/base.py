@@ -256,12 +256,12 @@ class GraphDB(ABC):
 
     @abstractmethod
     async def upsert_nodes(self, nodes: Sequence[Node]) -> None:
-        """Upsert nodes. Dispatches on label for persistence semantics.
+        """Upsert nodes. Dispatches on labels for persistence semantics.
 
         Parameters
         ----------
         nodes : Sequence[Node]
-            Nodes to create or update. Each node's ``label`` determines which
+            Nodes to create or update. Each node's label set determines which
             concrete storage path is used.
         """
 

@@ -17,13 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class Keywords(BaseModel):
-    """Structured output returned by the keyword extraction model.
-
-    Parameters
-    ----------
-    keywords : Sequence[str]
-        Distinct key phrases extracted from the query.
-    """
+    """Structured output returned by the keyword extraction model."""
 
     keywords: Sequence[str] = Field(
         ..., description="List of distinct key phrases extracted from the query."

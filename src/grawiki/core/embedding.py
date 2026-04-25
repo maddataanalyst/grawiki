@@ -1,9 +1,10 @@
-"""Shared embedder protocol and default wrapper.
+"""Shared embedding protocol used across GraWiki.
 
-This module defines the single embedder contract used across GraWiki. Both
-the :class:`~grawiki.graph.extraction.KnowledgeGraphExtractor` and the
-ingestion/retrieval layers accept an :class:`Embedder` instance so that
-exactly one embedding model is constructed per pipeline.
+This module defines the structural contract that embedding clients must satisfy
+when they are passed into GraWiki components. The project does not wrap a
+default embedding implementation here; callers typically construct
+``pydantic_ai.Embedder`` directly and share that instance across ingestion,
+extraction, retrieval, and similarity workflows.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from typing import Protocol
 
 
 class Embedding(Protocol):
-    """Structural protocol for embedder implementations used by GraWiki.
+    """Structural protocol for embedding implementations used by GraWiki.
 
     Notes
     -----

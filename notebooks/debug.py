@@ -1,12 +1,7 @@
-import autoroot
 from dotenv import load_dotenv
 
-from grawiki import rag
 from grawiki.db.falkordb import FalkorGraphDB
 from grawiki.rag.graph_rag import GraphRAG
-from pathlib import Path
-from tests import rag
-from grawiki.graph.models import Node
 
 
 load_dotenv(override=True)

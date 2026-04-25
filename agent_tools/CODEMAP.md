@@ -36,7 +36,15 @@ Exploratory and debugging material. This includes debug scripts, local database 
 
 ### `docs/`
 
-Documentation for humans and agents. `CODEMAP.md` lives here.
+Official public MkDocs documentation source.
+This now includes both narrative pages and generated API wrapper pages under
+`docs/api/`, with `GraphRAG` as the main entry point and dedicated similarity /
+deduplication reference pages.
+
+### `agent_tools/`
+
+Internal contributor and agent-facing guidance, plans, and repository maps.
+`CODEMAP.md` lives here.
 
 ## Top-Level Files
 
@@ -55,6 +63,18 @@ Short project overview and developer setup commands.
 ### `AGENTS.md`
 
 Repository-specific operating instructions for coding agents.
+
+### `mkdocs.yml`
+
+MkDocs site configuration for the public documentation in `docs/`.
+The site now includes a generated API reference section powered by
+`mkdocstrings` and `mkdocs-autorefs`, while keeping the Cinder theme and the
+existing bibliography/copy-to-llm plugins.
+
+### `.readthedocs.yaml`
+
+Read the Docs build configuration. Installs the optional `docs` extra and
+builds the MkDocs site.
 
 ## Package Map: `src/grawiki`
 

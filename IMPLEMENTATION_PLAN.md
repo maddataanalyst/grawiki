@@ -103,7 +103,7 @@ entities that RAG ingestion already wrote.
 - `src/grawiki/graph/graph_extraction.py` → `graph/extraction.py`.
 - `src/grawiki/graph/graph_prompts.py` → `graph/prompts.py`.
 - Test files renamed to match (`test_extraction.py`, `test_prompts.py`).
-- `docs/CODEMAP.md` updated.
+- `agent_tools/CODEMAP.md` updated.
 
 ### ✅ Step 3a — Read-path DB primitives + `NodeHit`
 

@@ -22,7 +22,10 @@ The repository currently focuses on two core capabilities:
 - `tests/`: pytest coverage for the facade, retrieval primitives, and FalkorDB adapter.
 - `main.py`: minimal entrypoint.
 - `notebooks/`: exploratory research and debugging notebooks.
-- `docs/`: contributor and agent-facing documentation, including `docs/CODEMAP.md`.
+- `docs/`: official public MkDocs documentation source.
+- `agent_tools/`: internal contributor and agent-facing documentation, including `agent_tools/CODEMAP.md`.
+- `mkdocs.yml`: MkDocs site configuration for the public docs.
+- `.readthedocs.yaml`: Read the Docs build configuration.
 
 ## Current API Shape
 
@@ -51,8 +54,8 @@ The repository currently focuses on two core capabilities:
    - Use the configured `pre-commit` hooks before committing changes.
    - Ensure `ruff` checks pass before opening or updating a pull request.
 
-5. Keep `docs/CODEMAP.md` in sync with architecture changes.
-   - When you add a new subsystem, public API surface, workflow, or important implementation area, update `docs/CODEMAP.md` in the same change.
+5. Keep `agent_tools/CODEMAP.md` in sync with architecture changes.
+   - When you add a new subsystem, public API surface, workflow, or important implementation area, update `agent_tools/CODEMAP.md` in the same change.
    - When behavior changes enough to invalidate the existing repository map, refresh the relevant sections before finishing the task.
 
 ## Standard Developer Commands

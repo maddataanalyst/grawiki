@@ -44,7 +44,7 @@ These shaped the design and should drive defaults:
 
 - ✅ `src/grawiki/rag/graph_rag.py` — added two constructor args (`resolve_entities_on_ingest`, `entity_resolution_threshold`), threshold validation, private `_resolve_extracted_entities` method, and call sites in `ingest` + `ingest_text`. +113 lines.
 - ✅ `tests/rag/test_graph_rag.py` — added `StaticExtractor` and `_CallCountingFinder` helpers plus 5 tests (happy path, default-off, threshold validation, cross-chunk idempotency, rel-endpoint rewriting with mixed-endpoint coverage). +376 lines.
-- ✅ `docs/CODEMAP.md` — DI bullet, new public-methods bullet, and Data Flow step 8 for the resolution hook.
+- ✅ `agent_tools/CODEMAP.md` — DI bullet, new public-methods bullet, and Data Flow step 8 for the resolution hook.
 
 No new module, no new classes. The rewrite was ~40 production-code lines.
 
@@ -58,7 +58,7 @@ No new module, no new classes. The rewrite was ~40 production-code lines.
 - **Created** `tests/similarity/test_deduplication.py` — tests for the deduplication helpers.
 - **Modified** `tests/db/test_falkordb.py` — added a real FalkorDBLite merge integration test.
 - **Modified** `tests/rag/test_graph_rag.py` — added integration coverage for `dedupe_entities(...)`.
-- **Modified** `docs/CODEMAP.md` — documented the new primitive, helper module, and facade method.
+- **Modified** `agent_tools/CODEMAP.md` — documented the new primitive, helper module, and facade method.
 
 ---
 
@@ -228,7 +228,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Update CODEMAP**
 
-In `docs/CODEMAP.md`, under `src/grawiki/rag/graph_rag.py`:
+In `agent_tools/CODEMAP.md`, under `src/grawiki/rag/graph_rag.py`:
 - Add `resolve_entities_on_ingest` and `entity_resolution_threshold` to the "Supports dependency injection through..." bullet.
 - Add a bullet under `Important public methods` clarifying that when `resolve_entities_on_ingest=True`, extracted entities are matched against persisted ones before persistence and existing ids are reused.
 
@@ -237,7 +237,7 @@ In `docs/CODEMAP.md`, under `src/grawiki/rag/graph_rag.py`:
 ```bash
 uv run pre-commit run --all-files
 uv run pytest
-git add src/grawiki/rag/graph_rag.py tests/rag/test_graph_rag.py docs/CODEMAP.md
+git add src/grawiki/rag/graph_rag.py tests/rag/test_graph_rag.py agent_tools/CODEMAP.md
 git commit -m "feat(rag): optional entity resolution during ingest"
 ```
 
@@ -369,7 +369,7 @@ async def merge_entity_nodes(
 - [ ] **Step 2: Update CODEMAP** and commit.
 
 ```bash
-git add src/grawiki/db/base.py docs/CODEMAP.md
+git add src/grawiki/db/base.py agent_tools/CODEMAP.md
 git commit -m "feat(db): declare merge_entity_nodes primitive"
 ```
 
@@ -669,7 +669,7 @@ The `_make_report` and `_flatten_collision_group` helpers can live at module lev
 ```bash
 uv run pre-commit run --all-files
 uv run pytest
-git add src/grawiki/rag/graph_rag.py tests/rag/test_graph_rag.py docs/CODEMAP.md
+git add src/grawiki/rag/graph_rag.py tests/rag/test_graph_rag.py agent_tools/CODEMAP.md
 git commit -m "feat(rag): add dedupe_entities facade"
 ```
 

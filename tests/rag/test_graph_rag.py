@@ -6,7 +6,6 @@ import asyncio
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-from grawiki.core.commons import Chunk
 import pytest
 
 from grawiki.db.base import GraphDB, NeighborRelationship, NodeHit
