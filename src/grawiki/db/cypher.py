@@ -135,6 +135,22 @@ RETURN r
 """.strip()
 
 
+def upsert_rel_by_id_cypher(rel_type: str) -> str:
+    """Build a relationship upsert matched by endpoint ids only."""
+
+    safe_type = (
+        rel_type if rel_type.startswith("__") else sanitize_cypher_identifier(rel_type)
+    )
+    rel_set_clause = _build_relationship_set_clause()
+    return f"""
+MATCH (s {{id: $source}})
+MATCH (t {{id: $target}})
+MERGE (s)-[r:{safe_type}]->(t)
+{rel_set_clause}
+RETURN r
+""".strip()
+
+
 def link_nodes_cypher(
     rel_type: str,
     *,

@@ -1,220 +1,73 @@
-"""Step-by-step pipeline debug notebook exported as a Python script."""
-
-# ruff: noqa: F704
-
-from __future__ import annotations
-
-# %% Imports
-import autoroot  # noqa: F401
-from importlib import reload
-from pathlib import Path
-
+import autoroot
 from dotenv import load_dotenv
-from rich import print as pprint
 
-import src.grawiki.core.pipeline as pipeline_module
-import src.grawiki.doc_processing.chunkers as chunkers
-import src.grawiki.doc_processing.document_processing as doc_proc
-from src.grawiki.db.falkordb import FalkorGraphDB
-
-pipeline_module = reload(pipeline_module)
-doc_proc = reload(doc_proc)
-chunkers = reload(chunkers)
+from grawiki.db.falkordb import FalkorGraphDB
+from grawiki.rag.graph_rag import GraphRAG
+from pathlib import Path
+from grawiki.graph.models import Node
 
 
-# %% Environment
 load_dotenv(override=True)
 
-DOC_PATH = Path("experimental_data/agent_architectures.txt")
-DB_PATH = Path("tmp/debug_pipeline.db")
-GRAPH_NAME = "debug_pipeline"
-MODEL_NAME = "openai:gpt-5-mini"
-EMBEDDING_MODEL = "openai:text-embedding-3-small"
-CHUNKING_STRATEGY = "sentence"
-MAX_WORKERS = 4
 
-pprint(
-    {
-        "doc_path": str(DOC_PATH),
-        "db_path": str(DB_PATH),
-        "graph_name": GRAPH_NAME,
-        "model": MODEL_NAME,
-        "embedding_model": EMBEDDING_MODEL,
-        "chunking_strategy": CHUNKING_STRATEGY,
-        "max_workers": MAX_WORKERS,
-    }
-)
+async def main():
+    database = FalkorGraphDB(db_path="local_falcor.db", graph_name="grawiki")
+    rag = GraphRAG(
+        db=database,
+        model="openrouter:openai/gpt-5-mini",
+        embedding_model="openrouter:openai/text-embedding-3-small",
+        max_workers=10,
+        resolve_entities_on_ingest=True,
+        entity_resolution_threshold=0.9,
+    )
 
+    sim_finder = rag._entity_similarity
+    duplicates = await sim_finder.find_duplicate_candidates(limit=10, threshold=0.9)
+    duplicate_candidate_1 = duplicates.similarity_candidates[0]
+    dupl_source_1 = duplicate_candidate_1.source
+    print("Duplicate candidate source node:")
+    dupl_dict = dict(dupl_source_1)
+    dupl_dict.pop("embedding", None)  # Remove embedding from printout for readability
+    print(dupl_dict)
 
-# %% Init adapter and pipeline
-adapter = FalkorGraphDB(DB_PATH, GRAPH_NAME)
-pipeline = pipeline_module.GrawikiPipeline(
-    model=MODEL_NAME,
-    embedding_model=EMBEDDING_MODEL,
-    graph_db=adapter,
-    chunking_strategy=CHUNKING_STRATEGY,
-    max_workers=MAX_WORKERS,
-)
+    merged_properties = dict(dupl_source_1.properties)
+    for hit in duplicate_candidate_1.hits:
+        for prop, value in hit.node.properties.items():
+            if prop not in merged_properties:
+                merged_properties[prop] = value
 
-pprint({"adapter_db_path": adapter.db_path, "graph_name": adapter.graph_name})
+    merged_labels = set([dupl_source_1.label])
+    for hit in duplicate_candidate_1.hits:
+        merged_labels.add(hit.node.label)
 
+    new_node = Node(
+        name=dupl_source_1.name,
+        semantic_key=dupl_source_1.semantic_key,
+        id=dupl_source_1.id,
+        label=list(merged_labels)[0],
+        properties=merged_properties,
+        embedding=dupl_source_1.embedding,
+    )
 
-# %% Optional cleanup for reruns
-adapter._graph.delete()
-adapter = FalkorGraphDB(DB_PATH, GRAPH_NAME)
-pipeline = pipeline_module.GrawikiPipeline(
-    model=MODEL_NAME,
-    embedding_model=EMBEDDING_MODEL,
-    graph_db=adapter,
-    chunking_strategy=CHUNKING_STRATEGY,
-    max_workers=MAX_WORKERS,
-)
+    collected_relationships = []
+    relationship_update_queries = []
+    for hit in duplicate_candidate_1.hits:
+        hit_rels = database.query(
+            f"MATCH (n {{id: '{hit.node.id}'}})-[r]->(m) RETURN r.id"
+        ).result_set
+        for rel in hit_rels:
+            collected_relationships.append(rel[0])
+            rel_update_query = f"""MATCH (n_new: {new_node.label} {{id: '{new_node.id}'}})
+            MERGE (n_new)-[r {{id: '{rel[0]}'}}]->(m)"""
+            relationship_update_queries.append(rel_update_query)
 
-
-# %% Setup indexes
-await pipeline.setup_db()
-pprint(adapter.query("CALL db.indexes()").result_set)
-
-
-# %% Read document
-document = pipeline.read_document(DOC_PATH)
-pprint(
-    {
-        "document_id": document.id,
-        "title": document.title,
-        "preview": document.content[:300],
-    }
-)
+    print("Collected relationships to update:", collected_relationships)
+    print("Generated relationship update queries:")
+    for query in relationship_update_queries:
+        print(query)
 
 
-# %% Chunk document
-chunks = pipeline.chunk_document(document)
-pprint(
-    [
-        {
-            "chunk_id": chunk.id,
-            "document_id": chunk.document_id,
-            "preview": chunk.content[:220],
-        }
-        for chunk in chunks[:5]
-    ]
-)
+if __name__ == "__main__":
+    import asyncio
 
-
-# %% Embed document and chunks
-document_embedding = await pipeline.embed_document(document)
-chunk_embeddings = await pipeline.embed_chunks(chunks)
-
-pprint(
-    {
-        "document_embedding_dimension": len(document_embedding),
-        "chunk_count": len(chunk_embeddings),
-        "chunk_embedding_dimension": len(chunk_embeddings[0])
-        if chunk_embeddings
-        else 0,
-    }
-)
-
-
-# %% Build graph nodes
-document_node = pipeline.build_document_node(document, document_embedding)
-chunk_nodes = pipeline.build_chunk_nodes(chunks, chunk_embeddings)
-
-pprint(
-    {
-        "document_node": document_node.model_dump(),
-        "first_chunk_node": chunk_nodes[0].model_dump() if chunk_nodes else None,
-    }
-)
-
-
-# %% Persist documents and chunks
-await pipeline.persist_documents_and_chunks(document_node, chunk_nodes)
-
-pprint(
-    {
-        "documents": adapter.ro_query(
-            "MATCH (d:__document__) RETURN d.id, d.name ORDER BY d.name"
-        ).result_set,
-        "chunks": adapter.ro_query(
-            "MATCH (d:__document__)-[:__has_chunk__]->(c:__chunk__) "
-            "RETURN d.name, c.id, c.name ORDER BY c.id"
-        ).result_set,
-    }
-)
-
-
-# %% Extract chunk graphs
-chunk_graphs = await pipeline.extract_chunk_graphs(chunks)
-
-pprint(
-    {
-        chunk_id: {
-            "nodes": [
-                {
-                    "id": node.id,
-                    "label": node.label,
-                    "semantic_key": node.semantic_key,
-                    "name": node.name,
-                    "embedding_dimension": len(node.embedding),
-                }
-                for node in graph.nodes
-            ],
-            "relationships": [
-                {
-                    "id": rel.id,
-                    "label": rel.label,
-                    "source": rel.source,
-                    "target": rel.target,
-                }
-                for rel in graph.relationships
-            ],
-        }
-        for chunk_id, graph in chunk_graphs.items()
-    }
-)
-
-
-# %% Persist entities and relationships
-await pipeline.persist_entities_and_relationships(chunks, chunk_graphs)
-
-pprint(
-    {
-        "entities": adapter.ro_query(
-            "MATCH (e:__entity__) "
-            "RETURN e.name, e.label, e.semantic_key ORDER BY e.name"
-        ).result_set,
-        "mentions": adapter.ro_query(
-            "MATCH (c:__chunk__)-[:__mentions__]->(e:__entity__) "
-            "RETURN c.id, e.name, e.label ORDER BY c.id, e.name"
-        ).result_set,
-        "relationships": adapter.ro_query(
-            "MATCH (source:__entity__)-[r]->(target:__entity__) "
-            "RETURN source.name, type(r), target.name ORDER BY source.name, target.name"
-        ).result_set,
-    }
-)
-
-
-# %% Inspect indexes
-pprint(adapter.query("CALL db.indexes()").result_set)
-
-
-# %% Full-text search example
-pprint(await pipeline.search("Turing", method="fulltext", limit=5))
-
-
-# %% Vector search example
-pprint(await pipeline.search("machine intelligence", method="vector", limit=5))
-
-
-# %% Explain vector query
-query_embedding = (
-    await pipeline.embedding.embed_query("machine intelligence")
-).embeddings[0]
-pprint(adapter.explain_vector_query("__entity__", query_embedding, 5))
-
-
-# %% One-shot ingestion alternative
-# Uncomment to run the whole flow in one call instead of step by step.
-# await pipeline.ingest_file(DOC_PATH)
+    asyncio.run(main())

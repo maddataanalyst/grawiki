@@ -43,7 +43,6 @@ class RapidFuzzEntitySimilarityMatcher:
         entity: Node,
         limit: int = 10,
         threshold: float | None = None,
-        same_label_only: bool = True,
         candidates: Sequence[Node] | None = None,
     ) -> list[NodeHit]:
         """Return RapidFuzz similarity hits for one entity.
@@ -57,8 +56,6 @@ class RapidFuzzEntitySimilarityMatcher:
         threshold : float | None, optional
             Minimum score required to keep a candidate. Defaults to
             :attr:`default_threshold`.
-        same_label_only : bool, optional
-            Whether candidates must share the same ontology label.
         candidates : Sequence[Node] | None, optional
             Optional candidate pool. When omitted, all persisted entities are
             loaded from the database.
@@ -90,8 +87,6 @@ class RapidFuzzEntitySimilarityMatcher:
         hits: list[NodeHit] = []
         for candidate in available:
             if candidate.id == entity.id:
-                continue
-            if same_label_only and candidate.label != entity.label:
                 continue
             candidate_name = candidate.name.strip()
             if not candidate_name:

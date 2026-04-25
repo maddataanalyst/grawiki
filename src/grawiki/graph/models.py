@@ -1,9 +1,12 @@
 """Pydantic models used to represent the knowledge graph."""
 
-import datetime
-from typing import Literal
+from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+import datetime
+from collections.abc import Mapping
+from typing import ClassVar
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from grawiki.core.commons import Chunk, Document
 
@@ -27,8 +30,9 @@ class Node(GraphModel):
     ----------
     id : str
         Machine-generated identifier unique within the graph.
-    label : str
-        Ontology type of the node, for example ``Person`` or ``Concept``.
+    labels : frozenset[str]
+        Ontology labels assigned to the node, for example ``{"Person"}`` or
+        ``{"Concept", "Theory"}``.
     semantic_key: str
         A key constructed as the concatenation of node label and shortened name, used to identify nodes with the
         same label and name across the graph. Should be very short and brief.
@@ -47,10 +51,10 @@ class Node(GraphModel):
             "This value is assigned by application code, typically as a UUID."
         )
     )
-    label: str = Field(
+    labels: frozenset[str] = Field(
         description=(
-            "Ontology type or category of the node, such as 'Person', "
-            "'Organization', or 'Concept'."
+            "Ontology labels or categories assigned to the node, such as "
+            "{'Person'} or {'Concept', 'Theory'}."
         )
     )
     semantic_key: str = Field(
@@ -78,6 +82,42 @@ class Node(GraphModel):
         ),
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_input_labels(cls, data: object) -> object:
+        """Normalize legacy ``label`` input into the ``labels`` field."""
+
+        if not isinstance(data, Mapping):
+            return data
+
+        normalized = dict(data)
+        raw_label = normalized.pop("label", None)
+        raw_labels = normalized.get("labels")
+
+        if raw_labels is None:
+            if raw_label is not None:
+                normalized["labels"] = [raw_label]
+            return normalized
+
+        if isinstance(raw_labels, str):
+            values = {raw_labels}
+        else:
+            values = {str(value) for value in raw_labels}
+        if raw_label is not None:
+            values.add(str(raw_label))
+        normalized["labels"] = list(values)
+        return normalized
+
+    @field_validator("labels")
+    @classmethod
+    def _validate_labels(cls, labels: frozenset[str]) -> frozenset[str]:
+        """Require a non-empty, non-blank label set."""
+
+        cleaned = frozenset(label.strip() for label in labels if label.strip())
+        if not cleaned:
+            raise ValueError("Node.labels must contain at least one non-empty label.")
+        return cleaned
+
 
 class ChunkNode(Node):
     """Graph node representing one source chunk.
@@ -98,7 +138,10 @@ class ChunkNode(Node):
         Additional chunk metadata.
     """
 
-    label: Literal["__chunk__"] = "__chunk__"
+    system_label: ClassVar[str] = "__chunk__"
+    labels: frozenset[str] = Field(
+        default_factory=lambda: frozenset({ChunkNode.system_label})
+    )
     document_id: str = Field(
         description="Identifier of the document this chunk belongs to."
     )
@@ -156,7 +199,10 @@ class DocumentNode(Node):
         Additional document metadata.
     """
 
-    label: Literal["__document__"] = "__document__"
+    system_label: ClassVar[str] = "__document__"
+    labels: frozenset[str] = Field(
+        default_factory=lambda: frozenset({DocumentNode.system_label})
+    )
     content: str = Field(description="Raw text content of the document.")
     embedding: list[float] = Field(
         default_factory=list,
@@ -208,7 +254,10 @@ class MemoryNode(Node):
         Additional memory metadata.
     """
 
-    label: Literal["__memory__"] = "__memory__"
+    system_label: ClassVar[str] = "__memory__"
+    labels: frozenset[str] = Field(
+        default_factory=lambda: frozenset({MemoryNode.system_label})
+    )
     content: str = Field(description="Stored memory content.")
     creation_date: str = Field(
         default_factory=lambda: datetime.datetime.now().isoformat(),

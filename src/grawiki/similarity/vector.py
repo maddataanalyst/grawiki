@@ -42,7 +42,6 @@ class VectorEntitySimilarityMatcher:
         entity: Node,
         limit: int = 10,
         threshold: float | None = None,
-        same_label_only: bool = True,
         candidates: Sequence[Node] | None = None,
     ) -> list[NodeHit]:
         """Return vector similarity hits for one entity.
@@ -56,8 +55,6 @@ class VectorEntitySimilarityMatcher:
         threshold : float | None, optional
             Minimum cosine similarity required to keep a candidate. Defaults to
             :attr:`default_threshold`.
-        same_label_only : bool, optional
-            Whether candidates must share the same ontology label.
         candidates : Sequence[Node] | None, optional
             Optional candidate pool. When omitted, all persisted entities with
             embeddings are loaded from the database.
@@ -85,8 +82,6 @@ class VectorEntitySimilarityMatcher:
         hits: list[NodeHit] = []
         for candidate in available:
             if candidate.id == entity.id:
-                continue
-            if same_label_only and candidate.label != entity.label:
                 continue
             score = _cosine_similarity(entity.embedding, candidate.embedding)
             if score is None or score < score_cutoff:

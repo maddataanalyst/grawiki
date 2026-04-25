@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "chonkie>=1.6.2",
+    "joblib>=1.5.3",
     "pandas>=3.0.2",
     "pydantic-ai-slim[openai,openrouter]>=1.84.1",
     "rapidfuzz>=3.14.5",

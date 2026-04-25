@@ -56,10 +56,23 @@ class FakeGraphDB(GraphDB):
             for entity in self.entities
         ]
 
+    async def entity_relationship_counts(
+        self, node_ids: Sequence[str]
+    ) -> dict[str, int]:
+        return {node_id: 0 for node_id in node_ids}
+
     async def upsert_nodes(self, nodes: Sequence[Node]) -> None:
         pass
 
     async def upsert_relationships(self, rels: Sequence[Relationship]) -> None:
+        pass
+
+    async def merge_entity_nodes(
+        self,
+        *,
+        master: Node,
+        duplicate_ids: Sequence[str],
+    ) -> None:
         pass
 
 
@@ -99,8 +112,8 @@ def test_find_semantic_key_collisions_returns_only_duplicate_keys() -> None:
     assert all(not entity.embedding for entity in collisions["person_alan-turing"])
 
 
-def test_rapidfuzz_search_excludes_self_and_other_labels() -> None:
-    """RapidFuzz search should keep same-label candidates above threshold."""
+def test_rapidfuzz_search_excludes_self_and_keeps_cross_label_hits() -> None:
+    """RapidFuzz search should consider duplicate names across label sets."""
 
     source = _entity("a", "person_alan-turing", "Alan Turing")
     db = FakeGraphDB(
@@ -118,13 +131,13 @@ def test_rapidfuzz_search_excludes_self_and_other_labels() -> None:
 
     hits = asyncio.run(finder.search(source, threshold=85.0, limit=5))
 
-    assert [hit.node.id for hit in hits] == ["b"]
+    assert [hit.node.id for hit in hits] == ["c", "b"]
     assert hits[0].matched_on == "rapidfuzz"
     assert hits[0].score >= 85.0
 
 
 def test_vector_search_uses_cosine_similarity_and_threshold() -> None:
-    """Vector search should rank same-label entities by cosine similarity."""
+    """Vector search should rank entities by cosine similarity across labels."""
 
     source = _entity(
         "a",
@@ -163,9 +176,9 @@ def test_vector_search_uses_cosine_similarity_and_threshold() -> None:
 
     hits = asyncio.run(finder.search(source, threshold=0.8, limit=5))
 
-    assert [hit.node.id for hit in hits] == ["b"]
+    assert [hit.node.id for hit in hits] == ["d", "b"]
     assert hits[0].matched_on == "vector"
-    assert hits[0].score == pytest.approx(0.9938837347)
+    assert hits[0].score == pytest.approx(1.0)
 
 
 def test_find_collision_candidates_searches_within_each_collision_group() -> None:

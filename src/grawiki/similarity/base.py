@@ -17,7 +17,6 @@ class EntitySimilarityMatcher(Protocol):
         entity: Node,
         limit: int = 10,
         threshold: float | None = None,
-        same_label_only: bool = True,
         candidates: Sequence[Node] | None = None,
     ) -> list[NodeHit]:
         """Return ranked entity candidates for ``entity``.
@@ -30,8 +29,6 @@ class EntitySimilarityMatcher(Protocol):
             Maximum number of candidate hits to return.
         threshold : float | None, optional
             Optional matcher-specific minimum score.
-        same_label_only : bool, optional
-            Whether candidates must share the same ontology label.
         candidates : Sequence[Node] | None, optional
             Optional pre-filtered candidate pool.
 

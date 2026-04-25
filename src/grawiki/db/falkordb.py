@@ -17,6 +17,7 @@ from grawiki.db.cypher import (
     link_nodes_cypher,
     sanitize_cypher_identifier,
     upsert_node_cypher,
+    upsert_rel_by_id_cypher,
     upsert_rel_cypher,
 )
 from grawiki.graph.models import (
@@ -44,7 +45,7 @@ _VECTOR_INDEX_LABELS = ("__document__", "__chunk__", "__memory__", "__entity__")
 # in one place lets the parsing helper index into result rows safely.
 _NODE_COLUMNS: tuple[str, ...] = (
     "id",
-    "label",
+    "labels",
     "semantic_key",
     "name",
     "properties",
@@ -227,11 +228,15 @@ class FalkorGraphDB(GraphDB):
         dims: dict[str, int] = {}
         for node in nodes:
             if isinstance(node, (DocumentNode, ChunkNode, MemoryNode)):
-                labels.add(node.label)
+                labels.update(node.labels)
             else:
                 labels.add("__entity__")
             if node.embedding:
-                key = node.label if node.label in _VECTOR_INDEX_LABELS else "__entity__"
+                key = (
+                    next(iter(node.labels))
+                    if next(iter(node.labels)) in _VECTOR_INDEX_LABELS
+                    else "__entity__"
+                )
                 dims[key] = len(node.embedding)
 
         await self.ensure_indexes(labels=labels, vector_dims=dims or None)
@@ -250,8 +255,7 @@ class FalkorGraphDB(GraphDB):
         Notes
         -----
         ``__has_chunk__`` matches both endpoints by node ``id``.
-        ``__mentions__`` matches the entity target by ``semantic_key``
-        (stored as ``rel.target``) so entity merging is transparent.
+        ``__mentions__`` matches the entity target by ``id``.
         All other labels match entity endpoints by ``id``.
         Every relationship persists the same ``id``, ``label``, and
         serialized ``properties`` fields.
@@ -280,7 +284,7 @@ class FalkorGraphDB(GraphDB):
                         "__mentions__",
                         source_label="__chunk__",
                         target_label="__entity__",
-                        target_match_field="semantic_key",
+                        target_match_field="id",
                     ),
                     params,
                 )
@@ -295,24 +299,23 @@ class FalkorGraphDB(GraphDB):
 
         embedding_literal = self._serialize_embedding(node.embedding)
         if isinstance(node, DocumentNode):
-            payload = node.model_dump()
+            payload = node.model_dump(exclude={"labels"})
             payload["metadata"] = self._serialize_mapping(node.metadata)
             self._query(
                 upsert_node_cypher(
                     ["__document__"],
-                    ["label", "name", "semantic_key", "content", "metadata"],
+                    ["name", "semantic_key", "content", "metadata"],
                     embedding_literal=embedding_literal,
                 ),
                 payload,
             )
         elif isinstance(node, ChunkNode):
-            payload = node.model_dump()
+            payload = node.model_dump(exclude={"labels"})
             payload["metadata"] = self._serialize_mapping(node.metadata)
             self._query(
                 upsert_node_cypher(
                     ["__chunk__"],
                     [
-                        "label",
                         "name",
                         "semantic_key",
                         "document_id",
@@ -324,13 +327,12 @@ class FalkorGraphDB(GraphDB):
                 payload,
             )
         elif isinstance(node, MemoryNode):
-            payload = node.model_dump()
+            payload = node.model_dump(exclude={"labels"})
             payload["metadata"] = self._serialize_mapping(node.metadata)
             self._query(
                 upsert_node_cypher(
                     ["__memory__"],
                     [
-                        "label",
                         "name",
                         "semantic_key",
                         "content",
@@ -342,20 +344,23 @@ class FalkorGraphDB(GraphDB):
                 payload,
             )
         else:
-            safe_label = sanitize_cypher_identifier(node.label)
+            stored_labels = sorted(node.labels)
             self._query(
                 upsert_node_cypher(
-                    ["__entity__", safe_label],
-                    ["label", "name", "semantic_key", "properties"],
+                    [
+                        "__entity__",
+                        *[sanitize_cypher_identifier(label) for label in stored_labels],
+                    ],
+                    ["name", "semantic_key", "properties", "labels"],
                     merge_field="semantic_key",
                     on_create_set_id=True,
                     embedding_literal=embedding_literal,
                 ),
                 {
                     "id": node.id,
-                    "label": node.label,
                     "name": node.name,
                     "semantic_key": node.semantic_key,
+                    "labels": stored_labels,
                     "properties": self._serialize_mapping(node.properties),
                 },
             )
@@ -522,7 +527,7 @@ class FalkorGraphDB(GraphDB):
         embedding_projection = ", n.embedding" if include_embeddings else ""
         result = self.ro_query(
             "MATCH (n:__entity__) "
-            "RETURN n.id, n.label, n.semantic_key, n.name, n.properties"
+            "RETURN n.id, n.labels, n.semantic_key, n.name, n.properties"
             f"{embedding_projection} ORDER BY n.semantic_key, n.id"
         )
         entities: list[Node] = []
@@ -538,7 +543,7 @@ class FalkorGraphDB(GraphDB):
             entities.append(
                 Node(
                     id=row[0],
-                    label=row[1],
+                    labels=frozenset(self._deserialize_labels(row[1])),
                     semantic_key=row[2],
                     name=row[3],
                     properties=properties,
@@ -546,6 +551,113 @@ class FalkorGraphDB(GraphDB):
                 )
             )
         return entities
+
+    async def entity_relationship_counts(
+        self, node_ids: Sequence[str]
+    ) -> dict[str, int]:
+        """Return total incident relationship counts for entity ids."""
+
+        unique_ids = list(dict.fromkeys(node_ids))
+        counts = {node_id: 0 for node_id in unique_ids}
+        if not unique_ids:
+            return counts
+
+        result = self.ro_query(
+            "MATCH (n:__entity__) WHERE n.id IN $ids "
+            "OPTIONAL MATCH (n)-[r]-() "
+            "RETURN n.id, count(r)",
+            {"ids": unique_ids},
+        )
+        for node_id, count in result.result_set:
+            counts[str(node_id)] = int(count)
+        return counts
+
+    async def merge_entity_nodes(
+        self,
+        *,
+        master: Node,
+        duplicate_ids: Sequence[str],
+    ) -> None:
+        """Merge duplicate entity nodes into ``master``."""
+
+        dup_ids = list(dict.fromkeys(duplicate_ids))
+        if master.id in dup_ids:
+            raise ValueError("master.id must not appear in duplicate_ids")
+        if not dup_ids:
+            return
+
+        touched_ids = [master.id, *dup_ids]
+        dup_set = set(dup_ids)
+        self._update_entity_node(master)
+
+        incident_rows = self.ro_query(
+            "MATCH (s)-[r]->(t) "
+            "WHERE s.id IN $ids OR t.id IN $ids "
+            "RETURN s.id, t.id, type(r), r.id, r.properties",
+            {"ids": touched_ids},
+        ).result_set
+
+        canonical: dict[tuple[str, str, str], dict[str, Any]] = {}
+        rel_ids_to_delete: list[str] = []
+        sorted_rows = sorted(
+            incident_rows,
+            key=lambda row: (
+                int((row[0] in dup_set) or (row[1] in dup_set)),
+                str(row[2]),
+                str(row[0]),
+                str(row[1]),
+                str(row[3]),
+            ),
+        )
+        for source_id, target_id, rel_type, rel_id, raw_properties in sorted_rows:
+            rel_ids_to_delete.append(str(rel_id))
+            new_source = master.id if source_id in dup_set else source_id
+            new_target = master.id if target_id in dup_set else target_id
+            if new_source == new_target:
+                continue
+
+            key = (str(new_source), str(rel_type), str(new_target))
+            properties = (
+                json.loads(raw_properties) if isinstance(raw_properties, str) else {}
+            )
+            existing = canonical.get(key)
+            if existing is None:
+                canonical[key] = {
+                    "id": str(rel_id),
+                    "source": str(new_source),
+                    "target": str(new_target),
+                    "label": str(rel_type),
+                    "properties": dict(properties),
+                }
+                continue
+
+            existing["properties"] = self._merge_string_mappings(
+                existing["properties"],
+                properties,
+            )
+
+        if rel_ids_to_delete:
+            self._query(
+                "MATCH ()-[r]->() WHERE r.id IN $ids DELETE r",
+                {"ids": rel_ids_to_delete},
+            )
+
+        for rel in canonical.values():
+            self._query(
+                upsert_rel_by_id_cypher(rel["label"]),
+                {
+                    "source": rel["source"],
+                    "target": rel["target"],
+                    "id": rel["id"],
+                    "label": rel["label"],
+                    "properties": self._serialize_mapping(rel["properties"]),
+                },
+            )
+
+        self._query(
+            "MATCH (n:__entity__) WHERE n.id IN $ids DELETE n",
+            {"ids": dup_ids},
+        )
 
     def ro_query(self, query: str, params: dict[str, Any] | None = None) -> Any:
         """Execute a read-only query.
@@ -737,6 +849,51 @@ class FalkorGraphDB(GraphDB):
 
         return self._graph.query(query, params or {})
 
+    def _update_entity_node(self, node: Node) -> None:
+        """Update an existing entity node by id and add any missing labels."""
+
+        sorted_labels = sorted(node.labels)
+        embedding_literal = self._serialize_embedding(node.embedding)
+        label_clause = ""
+        if sorted_labels:
+            cypher_labels = ":".join(
+                sanitize_cypher_identifier(label) for label in sorted_labels
+            )
+            label_clause = f"\nSET n:{cypher_labels}"
+        embedding_clause = ""
+        if embedding_literal is not None:
+            embedding_clause = f",\n    n.embedding = {embedding_literal}"
+        self._query(
+            (
+                "MATCH (n:__entity__ {id: $id})\n"
+                "SET n.name = $name,\n"
+                "    n.semantic_key = $semantic_key,\n"
+                "    n.properties = $properties,\n"
+                f"    n.labels = $labels{embedding_clause}"
+                f"{label_clause}\n"
+                "RETURN n"
+            ),
+            {
+                "id": node.id,
+                "name": node.name,
+                "semantic_key": node.semantic_key,
+                "labels": sorted_labels,
+                "properties": self._serialize_mapping(node.properties),
+            },
+        )
+
+    @staticmethod
+    def _merge_string_mappings(
+        left: Mapping[str, str],
+        right: Mapping[str, str],
+    ) -> dict[str, str]:
+        """Merge two string mappings, preferring existing values in ``left``."""
+
+        merged = dict(left)
+        for key, value in right.items():
+            merged.setdefault(str(key), str(value))
+        return merged
+
     @staticmethod
     def _serialize_mapping(mapping: dict[str, str]) -> str:
         """Serialize backend-unsupported map properties to JSON strings."""
@@ -838,7 +995,7 @@ class FalkorGraphDB(GraphDB):
             "__entity__",
             query,
             return_expression=(
-                "node.id AS id, node.name AS name, node.label AS label, "
+                "node.id AS id, node.name AS name, node.labels AS labels, "
                 "node.semantic_key AS semantic_key, 'name' AS matched_on "
                 f"LIMIT {int(limit)}"
             ),
@@ -847,7 +1004,7 @@ class FalkorGraphDB(GraphDB):
             {
                 "id": row[0],
                 "name": row[1],
-                "label": row[2],
+                "labels": self._deserialize_labels(row[2]),
                 "semantic_key": row[3],
                 "matched_on": row[4],
             }
@@ -901,13 +1058,13 @@ class FalkorGraphDB(GraphDB):
             "__entity__",
             query_embedding,
             limit,
-            return_expression="node.id, node.name, node.label, node.semantic_key, score",
+            return_expression="node.id, node.name, node.labels, node.semantic_key, score",
         )
         return [
             {
                 "id": row[0],
                 "name": row[1],
-                "label": row[2],
+                "labels": self._deserialize_labels(row[2]),
                 "semantic_key": row[3],
                 "score": row[4],
             }
@@ -1025,7 +1182,11 @@ class FalkorGraphDB(GraphDB):
             if not node.embedding:
                 continue
             dimension = len(node.embedding)
-            label = node.label if node.label in _VECTOR_INDEX_LABELS else "__entity__"
+            label = (
+                next(iter(node.labels))
+                if next(iter(node.labels)) in _VECTOR_INDEX_LABELS
+                else "__entity__"
+            )
             known_dimension = dimensions.get(label)
             if known_dimension is not None and known_dimension != dimension:
                 raise ValueError(
@@ -1060,6 +1221,18 @@ class FalkorGraphDB(GraphDB):
         """Return a safely quoted Cypher string literal."""
 
         return json.dumps(value)
+
+    @staticmethod
+    def _deserialize_labels(raw_labels: Any) -> list[str]:
+        """Return a sorted list of ontology labels from a Falkor row value."""
+
+        if raw_labels is None:
+            return []
+        if isinstance(raw_labels, str):
+            return [raw_labels]
+        if isinstance(raw_labels, Sequence):
+            return sorted(str(value) for value in raw_labels)
+        return [str(raw_labels)]
 
     @staticmethod
     def _node_return_expression(variable: str = "node") -> str:
@@ -1112,7 +1285,7 @@ class FalkorGraphDB(GraphDB):
 
         (
             node_id,
-            stored_label,
+            stored_labels,
             semantic_key,
             name,
             properties_json,
@@ -1133,6 +1306,7 @@ class FalkorGraphDB(GraphDB):
                 semantic_key=semantic_key,
                 name=name,
                 properties=properties,
+                labels=frozenset({DocumentNode.system_label}),
                 content=content or "",
                 metadata=metadata,
             )
@@ -1142,6 +1316,7 @@ class FalkorGraphDB(GraphDB):
                 semantic_key=semantic_key,
                 name=name,
                 properties=properties,
+                labels=frozenset({ChunkNode.system_label}),
                 content=content or "",
                 document_id=document_id or "",
                 metadata=metadata,
@@ -1152,13 +1327,14 @@ class FalkorGraphDB(GraphDB):
                 semantic_key=semantic_key,
                 name=name,
                 properties=properties,
+                labels=frozenset({MemoryNode.system_label}),
                 content=content or "",
                 creation_date=creation_date or "",
                 metadata=metadata,
             )
         return Node(
             id=node_id,
-            label=stored_label or system_label,
+            labels=frozenset(FalkorGraphDB._deserialize_labels(stored_labels)),
             semantic_key=semantic_key,
             name=name,
             properties=properties,

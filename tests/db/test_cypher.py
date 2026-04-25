@@ -30,11 +30,10 @@ def test_upsert_node_cypher_document_shape() -> None:
 
     query = upsert_node_cypher(
         ["__document__"],
-        ["label", "name", "semantic_key", "content", "metadata"],
+        ["name", "semantic_key", "content", "metadata"],
     )
 
     assert "MERGE (n:__document__ {id: $id})" in query
-    assert "n.label = $label" in query
     assert "n.content = $content" in query
     assert "ON CREATE SET" not in query
     assert "RETURN n" in query
@@ -45,7 +44,7 @@ def test_upsert_node_cypher_entity_shape() -> None:
 
     query = upsert_node_cypher(
         ["__entity__", "Research_Concept"],
-        ["label", "name", "semantic_key", "properties"],
+        ["name", "semantic_key", "properties", "labels"],
         merge_field="semantic_key",
         on_create_set_id=True,
     )
@@ -62,7 +61,7 @@ def test_upsert_node_cypher_embedding_appended() -> None:
 
     query = upsert_node_cypher(
         ["__chunk__"],
-        ["label", "name"],
+        ["name"],
         embedding_literal="vecf32([0.1, 0.2])",
     )
 
@@ -100,17 +99,17 @@ def test_link_nodes_cypher_has_chunk() -> None:
 
 
 def test_link_nodes_cypher_mentions() -> None:
-    """System __mentions__ link should store metadata and match target semantic_key."""
+    """System __mentions__ link should store metadata and match target id."""
 
     query = link_nodes_cypher(
         "__mentions__",
         source_label="__chunk__",
         target_label="__entity__",
-        target_match_field="semantic_key",
+        target_match_field="id",
     )
 
     assert "MATCH (s:__chunk__ {id: $source})" in query
-    assert "MATCH (t:__entity__ {semantic_key: $target})" in query
+    assert "MATCH (t:__entity__ {id: $target})" in query
     assert "MERGE (s)-[r:__mentions__]->(t)" in query
     assert "ON CREATE SET r.id = $id" in query
     assert "r.label = $label" in query

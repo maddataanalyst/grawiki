@@ -123,7 +123,7 @@ class KeywordsPathRetriever(Retriever):
         if not keywords:
             return []
 
-        best_hits: dict[tuple[str, str], NodeHit] = {}
+        best_hits: dict[str, NodeHit] = {}
         for keyword in keywords:
             embedding_result = await self.embedding.embed_query(keyword)
             if not embedding_result.embeddings:
@@ -139,7 +139,7 @@ class KeywordsPathRetriever(Retriever):
                 limit=limit,
             )
             for hit in seed_hits:
-                key = (hit.node.label, hit.node.id)
+                key = hit.node.id
                 current = best_hits.get(key)
                 if current is None or hit.score > current.score:
                     best_hits[key] = hit
@@ -190,7 +190,7 @@ def _path_node_from_hit(
     properties["content"] = _build_path_text(hit, relationships)
     return Node(
         id=hit.node.id,
-        label=hit.node.label,
+        labels=frozenset(hit.node.labels),
         semantic_key=hit.node.semantic_key,
         name=hit.node.name,
         properties=properties,
@@ -215,7 +215,7 @@ def _build_path_text(
         content = _node_content(target)
         line = (
             f"-[{relationship.relationship_label}]-> "
-            f"NAME: {target.name}; LABEL: {target.label}"
+            f"NAME: {target.name}; LABELS: {', '.join(sorted(target.labels))}"
         )
         if content:
             line += f"; CONTENT: {content}"

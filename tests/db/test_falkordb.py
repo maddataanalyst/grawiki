@@ -362,8 +362,10 @@ def test_fulltext_search_returns_node_hits_with_subclasses(
     assert all(isinstance(hit, NodeHit) for hit in hits)
     assert all(hit.matched_on == "fulltext" for hit in hits)
 
-    chunk_hits = [hit for hit in hits if hit.node.label == "__chunk__"]
-    entity_hits = [hit for hit in hits if hit.node.label == "Person"]
+    chunk_hits = [
+        hit for hit in hits if hit.node.labels == frozenset({ChunkNode.system_label})
+    ]
+    entity_hits = [hit for hit in hits if hit.node.labels == frozenset({"Person"})]
     assert chunk_hits, "expected at least one chunk hit"
     assert isinstance(chunk_hits[0].node, ChunkNode)
     assert chunk_hits[0].node.content
@@ -390,12 +392,16 @@ def test_vector_search_returns_scored_node_hits(
     assert all(hit.matched_on == "vector" for hit in hits)
     assert all(isinstance(hit.score, float) for hit in hits)
 
-    top_document = next(hit for hit in hits if hit.node.label == "__document__")
+    top_document = next(
+        hit for hit in hits if hit.node.labels == frozenset({DocumentNode.system_label})
+    )
     assert isinstance(top_document.node, DocumentNode)
     assert top_document.node.name == "Graph Memory"
     assert top_document.score == pytest.approx(1.0, abs=1e-6)
 
-    chunk_hits = [hit for hit in hits if hit.node.label == "__chunk__"]
+    chunk_hits = [
+        hit for hit in hits if hit.node.labels == frozenset({ChunkNode.system_label})
+    ]
     assert [hit.node.name for hit in chunk_hits] == ["Chunk chunk_1", "Chunk chunk_2"]
     assert chunk_hits[0].score > chunk_hits[1].score
 
@@ -411,10 +417,11 @@ def test_list_entities_returns_persisted_entities(
     )
 
     assert [
-        (entity.id, entity.label, entity.name) for entity in entities_without_embeddings
+        (entity.id, entity.labels, entity.name)
+        for entity in entities_without_embeddings
     ] == [
-        ("entity_comp", "Concept", "Computability"),
-        ("entity_turing", "Person", "Alan Turing"),
+        ("entity_comp", frozenset({"Concept"}), "Computability"),
+        ("entity_turing", frozenset({"Person"}), "Alan Turing"),
     ]
     assert all(not entity.embedding for entity in entities_without_embeddings)
     assert entities_with_embeddings[0].embedding == [0.0, 1.0, 0.0]
@@ -448,3 +455,155 @@ def test_neighbor_relationships_returns_one_hop_context(
         and relationship.target.name == "Alan Turing"
         for relationship in contexts["entity_comp"]
     )
+
+
+def test_merge_entity_nodes_redirects_and_deduplicates_relationships(
+    graph_db: FalkorGraphDB,
+) -> None:
+    """Merging should redirect edges, drop self-loops, and collapse duplicates.
+
+    Before
+    ------
+    K -__mentions__-> B
+    A -knows-> C
+    B -knows-> C
+    B -knows-> E
+    D -uses-> B
+    B -related_to-> A
+
+    After merging B into A
+    ----------------------
+    K -__mentions__-> A
+    A -knows-> C        # only one remains
+    A -knows-> E        # redirected from B
+    D -uses-> A
+
+                        # B -related_to-> A becomes A -related_to-> A, so dropped
+    B is deleted
+    """
+
+    chunk = ChunkNode(
+        id="chunk_1",
+        semantic_key="chunk_chunk_1",
+        name="Chunk chunk_1",
+        document_id="doc_1",
+        content="ReAct agent example.",
+    )
+    master = Node(
+        id="entity_a",
+        labels=frozenset({"Concept"}),
+        semantic_key="concept_react-agent",
+        name="ReAct agent",
+    )
+    duplicate = Node(
+        id="entity_b",
+        labels=frozenset({"AgentType"}),
+        semantic_key="agent_react",
+        name="ReAct agent",
+    )
+    node_c = Node(
+        id="entity_c",
+        labels=frozenset({"Tool"}),
+        semantic_key="tool_target-c",
+        name="Target C",
+    )
+    node_d = Node(
+        id="entity_d",
+        labels=frozenset({"Tool"}),
+        semantic_key="tool_source-d",
+        name="Source D",
+    )
+    node_e = Node(
+        id="entity_e",
+        labels=frozenset({"Tool"}),
+        semantic_key="tool_target-e",
+        name="Target E",
+    )
+
+    asyncio.run(
+        graph_db.upsert_nodes([chunk, master, duplicate, node_c, node_d, node_e])
+    )
+    asyncio.run(
+        graph_db.upsert_relationships(
+            [
+                Relationship(
+                    id="rel_master_out",
+                    source="entity_a",
+                    target="entity_c",
+                    label="knows",
+                ),
+                Relationship(
+                    id="rel_dup_out",
+                    source="entity_b",
+                    target="entity_c",
+                    label="knows",
+                ),
+                Relationship(
+                    id="rel_incoming",
+                    source="entity_d",
+                    target="entity_b",
+                    label="uses",
+                ),
+                Relationship(
+                    id="rel_dup_out_unique",
+                    source="entity_b",
+                    target="entity_e",
+                    label="knows",
+                ),
+                Relationship(
+                    id="rel_self_loop_source",
+                    source="entity_b",
+                    target="entity_a",
+                    label="related_to",
+                ),
+                Relationship(
+                    id="rel_mentions",
+                    source="chunk_1",
+                    target="entity_b",
+                    label="__mentions__",
+                ),
+            ]
+        )
+    )
+
+    asyncio.run(
+        graph_db.merge_entity_nodes(
+            master=Node(
+                id="entity_a",
+                labels=frozenset({"AgentType", "Concept"}),
+                semantic_key="concept_react-agent",
+                name="ReAct agent",
+            ),
+            duplicate_ids=["entity_b"],
+        )
+    )
+
+    assert graph_db.ro_query(
+        "MATCH (n:__entity__ {id: 'entity_b'}) RETURN count(n)"
+    ).result_set == [[0]]
+    assert graph_db.ro_query(
+        "MATCH (:__entity__ {id: 'entity_d'})-[:uses]->(:__entity__ {id: 'entity_a'}) "
+        "RETURN count(*)"
+    ).result_set == [[1]]
+    assert graph_db.ro_query(
+        "MATCH (:__entity__ {id: 'entity_a'})-[:knows]->(:__entity__ {id: 'entity_c'}) "
+        "RETURN count(*)"
+    ).result_set == [[1]]
+    assert graph_db.ro_query(
+        "MATCH (:__entity__ {id: 'entity_a'})-[:knows]->(:__entity__ {id: 'entity_e'}) "
+        "RETURN count(*)"
+    ).result_set == [[1]]
+    assert graph_db.ro_query(
+        "MATCH (:__chunk__ {id: 'chunk_1'})-[:__mentions__]->(:__entity__ {id: 'entity_a'}) "
+        "RETURN count(*)"
+    ).result_set == [[1]]
+    assert graph_db.ro_query(
+        "MATCH (n:__entity__ {id: 'entity_b'})-[r]-() RETURN count(r)"
+    ).result_set == [[0]]
+    assert graph_db.ro_query(
+        "MATCH (:__entity__ {id: 'entity_a'})-[:related_to]->(:__entity__ {id: 'entity_a'}) "
+        "RETURN count(*)"
+    ).result_set == [[0]]
+    assert graph_db.ro_query(
+        "MATCH (n:__entity__ {id: 'entity_a'}) RETURN n.labels"
+    ).result_set == [[["AgentType", "Concept"]]]

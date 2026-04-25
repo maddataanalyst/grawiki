@@ -138,8 +138,8 @@ class GraphDB(ABC):
         Returns
         -------
         list[NodeHit]
-            Flat list of hits across the requested labels. Callers group
-            by ``hit.node.label`` when a grouped view is needed.
+            Flat list of hits across the requested labels. Callers group by the
+            node family / label set when a grouped view is needed.
         """
 
     @abstractmethod
@@ -209,6 +209,24 @@ class GraphDB(ABC):
         """
 
     @abstractmethod
+    async def entity_relationship_counts(
+        self, node_ids: Sequence[str]
+    ) -> dict[str, int]:
+        """Return incident relationship counts for entity nodes.
+
+        Parameters
+        ----------
+        node_ids : Sequence[str]
+            Entity identifiers whose incident edge counts should be returned.
+
+        Returns
+        -------
+        dict[str, int]
+            Mapping from entity id to total incoming-plus-outgoing relationship
+            count. Missing ids should still appear with ``0``.
+        """
+
+    @abstractmethod
     async def upsert_nodes(self, nodes: Sequence[Node]) -> None:
         """Upsert nodes. Dispatches on label for persistence semantics.
 
@@ -228,6 +246,30 @@ class GraphDB(ABC):
         rels : Sequence[Relationship]
             Relationships to create or update. Both endpoints must already
             exist in the graph and are matched by their ``id`` field.
+        """
+
+    @abstractmethod
+    async def merge_entity_nodes(
+        self,
+        *,
+        master: Node,
+        duplicate_ids: Sequence[str],
+    ) -> None:
+        """Merge duplicate entity nodes into ``master``.
+
+        Parameters
+        ----------
+        master : Node
+            Final persisted state for the surviving master node. The master is
+            matched by ``master.id`` and updated before duplicate nodes are
+            deleted.
+        duplicate_ids : Sequence[str]
+            Entity identifiers to merge into ``master`` and then delete.
+
+        Raises
+        ------
+        ValueError
+            Raised when ``duplicate_ids`` contains ``master.id``.
         """
 
     async def save_documents_and_chunks(
@@ -310,6 +352,15 @@ class GraphDB(ABC):
         ]
         await self.upsert_nodes(all_entity_nodes)
 
+        canonical_ids_by_node_id: dict[str, str] = {}
+        canonical_ids_by_semantic_key: dict[str, str] = {}
+        for node in all_entity_nodes:
+            canonical_id = canonical_ids_by_semantic_key.setdefault(
+                node.semantic_key,
+                node.id,
+            )
+            canonical_ids_by_node_id[node.id] = canonical_id
+
         mentions_rels: list[Relationship] = []
         entity_rels: list[Relationship] = []
         for chunk_id, graph in chunk_graphs.items():
@@ -319,7 +370,7 @@ class GraphDB(ABC):
                     Relationship(
                         id=str(uuid.uuid4()),
                         source=chunk_id,
-                        target=node.semantic_key,
+                        target=canonical_ids_by_node_id[node.id],
                         label="__mentions__",
                     )
                 )
@@ -329,7 +380,14 @@ class GraphDB(ABC):
                         "Relationship references a node missing from the "
                         f"chunk graph for chunk '{chunk_id}'."
                     )
-                entity_rels.append(rel)
+                entity_rels.append(
+                    rel.model_copy(
+                        update={
+                            "source": canonical_ids_by_node_id[rel.source],
+                            "target": canonical_ids_by_node_id[rel.target],
+                        }
+                    )
+                )
 
         await self.upsert_relationships(mentions_rels)
         await self.upsert_relationships(entity_rels)
@@ -391,15 +449,18 @@ def _group_hits_by_label(hits: list[NodeHit], *, limit: int) -> SearchResults:
         Hits grouped by label, capped at ``limit`` per group.
     """
 
+    from grawiki.graph.models import ChunkNode, DocumentNode
+
     groups: SearchResults = {"__document__": [], "__chunk__": [], "__entity__": []}
     for hit in hits:
-        label = hit.node.label
-        bucket = groups.get(label)
-        if bucket is None:
-            # Ontology labels (e.g. "Person") are entities; system labels that
-            # don't match a group (e.g. "__memory__") are dropped.
-            if not label.startswith("__"):
-                bucket = groups.get("__entity__")
+        labels = hit.node.labels
+        bucket = None
+        if DocumentNode.system_label in labels:
+            bucket = groups["__document__"]
+        elif ChunkNode.system_label in labels:
+            bucket = groups["__chunk__"]
+        elif not any(label.startswith("__") for label in labels):
+            bucket = groups["__entity__"]
         if bucket is None:
             continue
         if len(bucket) >= limit:
@@ -408,7 +469,6 @@ def _group_hits_by_label(hits: list[NodeHit], *, limit: int) -> SearchResults:
             "id": hit.node.id,
             "name": hit.node.name,
         }
-        from grawiki.graph.models import ChunkNode, DocumentNode
 
         if isinstance(hit.node, DocumentNode):
             row["content"] = hit.node.content
@@ -416,7 +476,7 @@ def _group_hits_by_label(hits: list[NodeHit], *, limit: int) -> SearchResults:
             row["content"] = hit.node.content
             row["document_id"] = hit.node.document_id
         else:
-            row["label"] = hit.node.label
+            row["labels"] = sorted(hit.node.labels)
             row["semantic_key"] = hit.node.semantic_key
         if hit.matched_on:
             row["matched_on"] = hit.matched_on

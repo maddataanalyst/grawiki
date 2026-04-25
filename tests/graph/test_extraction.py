@@ -63,4 +63,5 @@ def test_build_knowledge_graph_embeds_entities() -> None:
     built_graph = asyncio.run(extractor._build_knowledge_graph(graph))
 
     assert built_graph.nodes[0].embedding == [1.0, 1.0, 2.0]
+    assert built_graph.nodes[0].labels == frozenset({"Person"})
     assert isinstance(built_graph.nodes[0].embedding, list)

@@ -82,10 +82,23 @@ class FakeGraphDB(GraphDB):
     async def list_entities(self, *, include_embeddings: bool = False) -> list[Node]:
         return []
 
+    async def entity_relationship_counts(
+        self, node_ids: Sequence[str]
+    ) -> dict[str, int]:
+        return {node_id: 0 for node_id in node_ids}
+
     async def upsert_nodes(self, nodes: Sequence[Node]) -> None:
         pass
 
     async def upsert_relationships(self, rels: Sequence[Relationship]) -> None:
+        pass
+
+    async def merge_entity_nodes(
+        self,
+        *,
+        master: Node,
+        duplicate_ids: Sequence[str],
+    ) -> None:
         pass
 
 

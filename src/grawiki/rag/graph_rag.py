@@ -29,6 +29,11 @@ from grawiki.graph.models import (
 from grawiki.retrieval.base import Retriever
 from grawiki.retrieval.keywords import KeywordsPathRetriever
 from grawiki.retrieval.text import TextRetriever
+from grawiki.similarity.deduplication import (
+    MergeReport,
+    build_merged_master,
+    pick_master,
+)
 from grawiki.similarity.models import (
     EntityDuplicateCandidates,
     SemanticKeyCollisionCandidates,
@@ -302,9 +307,9 @@ class GraphRAG:
 
         dims: dict[str, int] = {}
         if document_node.embedding:
-            dims[document_node.label] = len(document_node.embedding)
+            dims[DocumentNode.system_label] = len(document_node.embedding)
         if chunk_nodes and chunk_nodes[0].embedding:
-            dims[chunk_nodes[0].label] = len(chunk_nodes[0].embedding)
+            dims[ChunkNode.system_label] = len(chunk_nodes[0].embedding)
 
         logger.info(
             "Persisting document %s and %s chunks", document_node.id, len(chunk_nodes)
@@ -383,7 +388,6 @@ class GraphRAG:
         *,
         limit: int = 10,
         threshold: float | None = None,
-        same_label_only: bool = True,
         candidates: list[Node] | None = None,
     ) -> list[NodeHit]:
         """Return candidate entities similar to ``entity``.
@@ -396,8 +400,6 @@ class GraphRAG:
             Maximum number of candidate hits to return.
         threshold : float | None, optional
             Optional strategy-specific minimum score.
-        same_label_only : bool, optional
-            Whether candidates must share the same ontology label.
         candidates : list[Node] | None, optional
             Optional candidate pool. When omitted, persisted entities are
             loaded from the graph database.
@@ -417,7 +419,6 @@ class GraphRAG:
             entity,
             limit=limit,
             threshold=threshold,
-            same_label_only=same_label_only,
             candidates=candidates,
         )
 
@@ -426,7 +427,6 @@ class GraphRAG:
         *,
         limit: int = 10,
         threshold: float | None = None,
-        same_label_only: bool = True,
     ) -> list[SemanticKeyCollisionCandidates]:
         """Return semantic-key collision groups annotated with merge candidates.
 
@@ -436,8 +436,6 @@ class GraphRAG:
             Maximum number of candidate hits returned per source entity.
         threshold : float | None, optional
             Optional strategy-specific minimum score.
-        same_label_only : bool, optional
-            Whether candidates must share the same ontology label.
 
         Returns
         -------
@@ -453,7 +451,6 @@ class GraphRAG:
         return await self._entity_similarity.find_collision_candidates(
             limit=limit,
             threshold=threshold,
-            same_label_only=same_label_only,
         )
 
     async def find_entity_duplicate_candidates(
@@ -461,7 +458,6 @@ class GraphRAG:
         *,
         limit: int = 10,
         threshold: float | None = None,
-        same_label_only: bool = True,
         skip_semantic_key_collisions_in_similarity_scan: bool = True,
     ) -> EntityDuplicateCandidates:
         """Run the two-step duplicate-finding heuristic across entities.
@@ -472,8 +468,6 @@ class GraphRAG:
             Maximum number of candidate hits returned per source entity.
         threshold : float | None, optional
             Optional matcher-specific minimum score.
-        same_label_only : bool, optional
-            Whether candidates must share the same ontology label.
         skip_semantic_key_collisions_in_similarity_scan : bool, optional
             Whether the broader similarity scan should exclude entities already
             involved in exact semantic-key collisions.
@@ -488,9 +482,88 @@ class GraphRAG:
         return await self._entity_similarity.find_duplicate_candidates(
             limit=limit,
             threshold=threshold,
-            same_label_only=same_label_only,
             skip_semantic_key_collisions_in_similarity_scan=skip_semantic_key_collisions_in_similarity_scan,
         )
+
+    async def dedupe_entities(
+        self,
+        *,
+        limit: int = 10,
+        threshold: float | None = None,
+        min_merge_score: float = 0.95,
+        dry_run: bool = False,
+    ) -> list[MergeReport]:
+        """Find duplicate entities and merge them into canonical masters.
+
+        Parameters
+        ----------
+        limit : int, optional
+            Maximum candidate hits returned per source entity during duplicate
+            inspection.
+        threshold : float | None, optional
+            Optional similarity threshold forwarded to the duplicate finder.
+        min_merge_score : float, optional
+            Minimum candidate score required for inclusion in a merge group.
+        dry_run : bool, optional
+            When ``True``, reports are produced without applying destructive DB
+            changes.
+
+        Returns
+        -------
+        list[MergeReport]
+            Reports describing the merge decisions that were made.
+        """
+
+        candidates = await self.find_entity_duplicate_candidates(
+            limit=limit,
+            threshold=threshold,
+        )
+        reports: list[MergeReport] = []
+        seen: set[str] = set()
+
+        for collision_group in candidates.semantic_key_collision_candidates:
+            group = [
+                node
+                for node in _flatten_collision_group(
+                    collision_group,
+                    min_score=min_merge_score,
+                )
+                if node.id not in seen
+            ]
+            if len(group) < 2:
+                continue
+            merged_master, report = await self._build_merge_candidate(
+                group,
+                source="collision",
+            )
+            reports.append(report)
+            if not dry_run:
+                await self._db.merge_entity_nodes(
+                    master=merged_master,
+                    duplicate_ids=list(report.duplicate_ids),
+                )
+            seen.update(node.id for node in group)
+
+        for result in candidates.similarity_candidates:
+            group = [result.source] + [
+                hit.node for hit in result.hits if hit.score >= min_merge_score
+            ]
+            group = [node for node in group if node.id not in seen]
+            if len(group) < 2:
+                continue
+            merged_master, report = await self._build_merge_candidate(
+                group,
+                source="similarity",
+            )
+            reports.append(report)
+            if not dry_run:
+                await self._db.merge_entity_nodes(
+                    master=merged_master,
+                    duplicate_ids=list(report.duplicate_ids),
+                )
+            seen.update(node.id for node in group)
+
+        return reports
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -517,9 +590,7 @@ class GraphRAG:
         -----
         Uses ``self._entity_similarity`` so the same similarity strategy that
         powers the duplicate-candidate helpers is applied during ingestion.
-        ``same_label_only`` is ``False`` because real data shows duplicates
-        routinely cross ontology labels (``'State'`` appears as both
-        ``Type`` and ``Class``, for example).
+        Real data shows duplicates routinely cross ontology labels.
         """
 
         # Collect unique extracted entities across all chunks.
@@ -535,7 +606,6 @@ class GraphRAG:
                 ext_node,
                 limit=1,
                 threshold=self.entity_resolution_threshold,
-                same_label_only=False,
             )
             if hits:
                 resolved[ext_id] = hits[0].node
@@ -558,6 +628,28 @@ class GraphRAG:
             ]
             rewritten[cid] = KnowledgeGraph(nodes=new_nodes, relationships=new_rels)
         return rewritten
+
+    async def _build_merge_candidate(
+        self,
+        group: list[Node],
+        *,
+        source: str,
+    ) -> tuple[Node, MergeReport]:
+        """Build the merged master payload and report for one duplicate group."""
+
+        relation_counts = await self._db.entity_relationship_counts(
+            [node.id for node in group]
+        )
+        master = pick_master(group, relation_counts)
+        duplicates = [node for node in group if node.id != master.id]
+        merged_master, conflicts = build_merged_master(master, duplicates)
+        return merged_master, MergeReport(
+            master_id=merged_master.id,
+            duplicate_ids=tuple(node.id for node in duplicates),
+            source=source,
+            merged_labels=tuple(sorted(merged_master.labels)),
+            property_conflicts=conflicts,
+        )
 
     # ------------------------------------------------------------------
     # High-level operations
@@ -653,8 +745,8 @@ class GraphRAG:
         """
 
         logger.info("Running search for query %r", query)
-        node_hit_scores: dict[tuple[str, str], float] = {}
-        node_hits: dict[tuple[str, str], NodeHit] = {}
+        node_hit_scores: dict[str, float] = {}
+        node_hits: dict[str, NodeHit] = {}
         errors: list[Exception] = []
         for retriever in self._retrievers:
             try:
@@ -669,7 +761,7 @@ class GraphRAG:
                 )
                 continue
             for hit in hits:
-                hit_key = (hit.node.label, hit.node.id)
+                hit_key = hit.node.id
                 score = hit.score
                 if hit_key in node_hit_scores:
                     if score > node_hit_scores[hit_key]:
@@ -682,7 +774,23 @@ class GraphRAG:
             raise RuntimeError("All retrievers failed for the query.") from errors[0]
         sorted_hits = sorted(
             node_hits.values(),
-            key=lambda h: node_hit_scores[(h.node.label, h.node.id)],
+            key=lambda h: node_hit_scores[h.node.id],
             reverse=True,
         )[:limit]
         return sorted_hits
+
+
+def _flatten_collision_group(
+    group: SemanticKeyCollisionCandidates,
+    *,
+    min_score: float,
+) -> list[Node]:
+    """Return unique nodes participating in a semantic-key collision group."""
+
+    flattened: dict[str, Node] = {}
+    for result in group.results:
+        flattened.setdefault(result.source.id, result.source)
+        for hit in result.hits:
+            if hit.score >= min_score:
+                flattened.setdefault(hit.node.id, hit.node)
+    return list(flattened.values())

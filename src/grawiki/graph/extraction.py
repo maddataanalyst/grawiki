@@ -145,7 +145,7 @@ def _node_from_extracted(extracted_node: ExtractedNode) -> Node:
 
     return Node(
         id=str(uuid.uuid4()),
-        label=extracted_node.label,
+        labels=frozenset({extracted_node.label}),
         semantic_key=extracted_node.semantic_key,
         name=extracted_node.name,
         properties=dict(extracted_node.properties),

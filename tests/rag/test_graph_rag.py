@@ -13,6 +13,7 @@ from grawiki.db.base import GraphDB, NeighborRelationship, NodeHit
 from grawiki.graph.models import KnowledgeGraph, Node, Relationship
 from grawiki.rag.graph_rag import GraphRAG
 from grawiki.retrieval.text import TextRetriever
+from grawiki.similarity.deduplication import MergeReport
 from grawiki.similarity.fuzzy import RapidFuzzEntitySimilarityMatcher
 from grawiki.similarity.similarity_finder import EntitySimilarityFinder
 
@@ -51,6 +52,8 @@ class FakeGraphDB(GraphDB):
         self.fulltext_calls: list[tuple[list[str], str, int]] = []
         self.vector_calls: list[tuple[list[str], list[float], int]] = []
         self.entities: list[Node] = []
+        self.relationship_counts: dict[str, int] = {}
+        self.merges: list[tuple[Node, tuple[str, ...]]] = []
 
     async def setup(self, embedding_dimensions: dict[str, int] | None = None) -> None:
         self.setup_calls.append(embedding_dimensions)
@@ -104,6 +107,21 @@ class FakeGraphDB(GraphDB):
             node.model_copy(update={"embedding": []}, deep=True)
             for node in self.entities
         ]
+
+    async def entity_relationship_counts(
+        self, node_ids: Sequence[str]
+    ) -> dict[str, int]:
+        return {
+            node_id: self.relationship_counts.get(node_id, 0) for node_id in node_ids
+        }
+
+    async def merge_entity_nodes(
+        self,
+        *,
+        master: Node,
+        duplicate_ids: Sequence[str],
+    ) -> None:
+        self.merges.append((master.model_copy(deep=True), tuple(duplicate_ids)))
 
 
 class StaticRetriever:
@@ -310,9 +328,10 @@ def test_graph_rag_search_keeps_highest_score_and_distinct_labels() -> None:
 
     hits = asyncio.run(rag.search("machine intelligence", limit=5))
 
-    assert [(hit.node.label, hit.node.id, hit.score) for hit in hits] == [
-        ("__chunk__", "shared", 0.9),
-        ("Person", "shared", 0.7),
+    assert [
+        (tuple(sorted(hit.node.labels)), hit.node.id, hit.score) for hit in hits
+    ] == [
+        (("__chunk__",), "shared", 0.9),
     ]
 
 
@@ -429,7 +448,6 @@ class _CallCountingFinder:
         *,
         limit: int = 10,
         threshold: float | None = None,
-        same_label_only: bool = True,
         candidates: list[Node] | None = None,
     ) -> list[NodeHit]:
         self.search_calls.append(entity)
@@ -437,7 +455,6 @@ class _CallCountingFinder:
             entity,
             limit=limit,
             threshold=threshold,
-            same_label_only=same_label_only,
             candidates=candidates,
         )
 
@@ -499,9 +516,7 @@ def test_graph_rag_resolves_entities_on_ingest_when_enabled() -> None:
     # Inspect the chunk_graphs that were passed to persist_entities_and_relationships.
     persisted_chunk_graphs = fake_db.saved_entities[-1][1]
     all_node_ids = {
-        node.id
-        for graph in persisted_chunk_graphs.values()
-        for node in graph.nodes
+        node.id for graph in persisted_chunk_graphs.values() for node in graph.nodes
     }
     all_rel_sources = {
         rel.source
@@ -583,9 +598,7 @@ def test_graph_rag_does_not_resolve_entities_when_disabled() -> None:
 
     persisted_chunk_graphs = fake_db.saved_entities[-1][1]
     all_node_ids = {
-        node.id
-        for graph in persisted_chunk_graphs.values()
-        for node in graph.nodes
+        node.id for graph in persisted_chunk_graphs.values() for node in graph.nodes
     }
 
     assert "extracted-1" in all_node_ids, (
@@ -651,6 +664,70 @@ def test_graph_rag_exposes_combined_duplicate_candidate_report() -> None:
     assert [hit.node.id for hit in report.similarity_candidates[0].hits] == ["entity_4"]
 
 
+def test_graph_rag_dedupe_entities_builds_merge_reports_and_calls_db() -> None:
+    """dedupe_entities() should choose a master, merge labels, and call the DB."""
+
+    graph_db = FakeGraphDB()
+    graph_db.entities = [
+        Node(
+            id="entity_master",
+            labels=frozenset({"Concept"}),
+            semantic_key="concept_react-agent",
+            name="ReAct agent",
+            properties={"kind": "concept"},
+            embedding=[1.0, 0.0, 0.0],
+        ),
+        Node(
+            id="entity_dup",
+            labels=frozenset({"AgentType"}),
+            semantic_key="agent_react",
+            name="ReAct agent",
+            properties={"kind": "agent"},
+            embedding=[1.0, 0.0, 0.0],
+        ),
+        Node(
+            id="entity_other",
+            labels=frozenset({"Tool"}),
+            semantic_key="tool_worker",
+            name="Worker",
+            embedding=[0.0, 1.0, 0.0],
+        ),
+    ]
+    graph_db.relationship_counts = {"entity_master": 3, "entity_dup": 1}
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=ConcurrencyTrackingExtractor(),
+        retrievers=(StaticRetriever([]),),
+    )
+
+    reports = asyncio.run(
+        rag.dedupe_entities(
+            threshold=0.9,
+            min_merge_score=0.9,
+        )
+    )
+
+    assert reports == [
+        MergeReport(
+            master_id="entity_master",
+            duplicate_ids=("entity_dup",),
+            source="similarity",
+            merged_labels=("AgentType", "Concept"),
+            property_conflicts=("kind",),
+        )
+    ]
+    assert len(graph_db.merges) == 1
+    merged_master, duplicate_ids = graph_db.merges[0]
+    assert duplicate_ids == ("entity_dup",)
+    assert merged_master.id == "entity_master"
+    assert merged_master.semantic_key == "concept_react-agent"
+    assert merged_master.labels == frozenset({"AgentType", "Concept"})
+    assert merged_master.properties == {"kind": "concept"}
+
+
 def test_resolve_extracted_entities_searches_each_unique_id_once() -> None:
     """When the same extracted entity appears in two chunks, the similarity
     search should be issued exactly once (de-duplication by entity id).
@@ -684,7 +761,9 @@ def test_resolve_extracted_entities_searches_each_unique_id_once() -> None:
         embedding_model="test-embedding",
         db=fake_db,
         embedding=FakeEmbedder(),
-        kg_extractor=StaticExtractor(KnowledgeGraph(nodes=[extracted], relationships=[])),
+        kg_extractor=StaticExtractor(
+            KnowledgeGraph(nodes=[extracted], relationships=[])
+        ),
         retrievers=(StaticRetriever([]),),
         similarity_finder=counting_finder,
         resolve_entities_on_ingest=True,

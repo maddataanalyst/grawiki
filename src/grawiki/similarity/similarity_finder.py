@@ -89,7 +89,6 @@ class EntitySimilarityFinder:
         *,
         limit: int = 10,
         threshold: float | None = None,
-        same_label_only: bool = True,
         candidates: list[Node] | None = None,
     ) -> list[NodeHit]:
         """Return similarity candidates for one entity.
@@ -102,8 +101,6 @@ class EntitySimilarityFinder:
             Maximum number of candidate hits to return.
         threshold : float | None, optional
             Optional strategy-specific minimum score.
-        same_label_only : bool, optional
-            Whether candidates must share the same ontology label.
         candidates : list[Node] | None, optional
             Optional pre-filtered candidate pool.
 
@@ -118,7 +115,6 @@ class EntitySimilarityFinder:
             entity=entity,
             limit=limit,
             threshold=threshold,
-            same_label_only=same_label_only,
             candidates=candidates,
         )
 
@@ -128,7 +124,6 @@ class EntitySimilarityFinder:
         collisions: dict[str, list[Node]] | None = None,
         limit: int = 10,
         threshold: float | None = None,
-        same_label_only: bool = True,
     ) -> list[SemanticKeyCollisionCandidates]:
         """Run similarity search inside semantic-key collision groups.
 
@@ -141,8 +136,6 @@ class EntitySimilarityFinder:
             Maximum number of candidate hits returned per source entity.
         threshold : float | None, optional
             Optional strategy-specific minimum score.
-        same_label_only : bool, optional
-            Whether candidates must share the same ontology label.
 
         Returns
         -------
@@ -166,7 +159,6 @@ class EntitySimilarityFinder:
                     entity,
                     limit=limit,
                     threshold=threshold,
-                    same_label_only=same_label_only,
                     candidates=entities,
                 )
                 results.append(EntitySimilarityResult(source=entity, hits=hits))
@@ -184,7 +176,6 @@ class EntitySimilarityFinder:
         *,
         limit: int = 10,
         threshold: float | None = None,
-        same_label_only: bool = True,
         entities: list[Node] | None = None,
         skip_semantic_key_collisions: bool = False,
         semantic_key_collisions: dict[str, list[Node]] | None = None,
@@ -197,8 +188,6 @@ class EntitySimilarityFinder:
             Maximum number of candidate hits returned per source entity.
         threshold : float | None, optional
             Optional matcher-specific minimum score.
-        same_label_only : bool, optional
-            Whether candidates must share the same ontology label.
         entities : list[Node] | None, optional
             Optional explicit entity pool. When omitted, persisted entities are
             loaded from the database with embeddings included.
@@ -241,7 +230,6 @@ class EntitySimilarityFinder:
                 entity,
                 limit=limit,
                 threshold=threshold,
-                same_label_only=same_label_only,
                 candidates=filtered[index + 1 :],
             )
             if not hits:
@@ -254,7 +242,6 @@ class EntitySimilarityFinder:
         *,
         limit: int = 10,
         threshold: float | None = None,
-        same_label_only: bool = True,
         skip_semantic_key_collisions_in_similarity_scan: bool = True,
     ) -> EntityDuplicateCandidates:
         """Run the two-step duplicate-finding heuristic across entities.
@@ -265,8 +252,6 @@ class EntitySimilarityFinder:
             Maximum number of candidate hits returned per source entity.
         threshold : float | None, optional
             Optional matcher-specific minimum score.
-        same_label_only : bool, optional
-            Whether candidates must share the same ontology label.
         skip_semantic_key_collisions_in_similarity_scan : bool, optional
             Whether the broader similarity scan should exclude entities already
             involved in exact semantic-key collisions.
@@ -285,12 +270,10 @@ class EntitySimilarityFinder:
             collisions=semantic_key_collisions,
             limit=limit,
             threshold=threshold,
-            same_label_only=same_label_only,
         )
         similarity_candidates = await self.find_similarity_candidates(
             limit=limit,
             threshold=threshold,
-            same_label_only=same_label_only,
             skip_semantic_key_collisions=skip_semantic_key_collisions_in_similarity_scan,
             semantic_key_collisions=semantic_key_collisions,
         )

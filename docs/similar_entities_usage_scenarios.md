@@ -17,16 +17,14 @@
 | A | A.1 Add resolution hook to `GraphRAG` | ✅ Shipped | commits `138a67d` (feat) + `afe98d8` (validation/test fix). Threshold validation (`[-1.0, 1.0]`) added during code review — not in original plan. |
 | A | A.2 Cross-chunk de-duplication coverage | ✅ Shipped | commits `dc51442` (tests) + `6020f59` (type-annotation + mixed-endpoint rel coverage). |
 | A | A.3 Notebook sanity check | ⏸ Deferred | Manual step against `notebooks/local_falkor.db`; run it when you next open the notebook. Not tracked by tests. |
-| B | B.0 Fix `__mentions__` target bug | ⏳ Next | Blocks Scenario B. Must land first because merge-edge redirection in B.2 relies on `target=node.id`. |
-| B | B.1 Declare `merge_entity_nodes` primitive | ⏳ Not started | |
-| B | B.2 Implement `merge_entity_nodes` on `FalkorGraphDB` | ⏳ Not started | |
-| B | B.3 `pick_master` helper + `MergeReport` | ⏳ Not started | |
-| B | B.4 `GraphRAG.dedupe_entities` facade | ⏳ Not started | |
-| B | B.5 Notebook end-to-end check | ⏳ Not started | |
+| B | B.0 Fix `__mentions__` target bug | ✅ Shipped | `__mentions__` now targets entity ids; batch persistence rewrites duplicate semantic keys to a canonical id before relationship persistence. |
+| B | B.1 Declare `merge_entity_nodes` primitive | ✅ Shipped | Added `entity_relationship_counts(...)` and `merge_entity_nodes(...)` to `GraphDB`. |
+| B | B.2 Implement `merge_entity_nodes` on `FalkorGraphDB` | ✅ Shipped | Falkor merge rewrites touched edges in Python, drops rewrite-created self-loops, deduplicates canonical edges, then deletes duplicates. |
+| B | B.3 `pick_master` helper + `MergeReport` | ✅ Shipped | Implemented in `src/grawiki/similarity/deduplication.py` with tests. |
+| B | B.4 `GraphRAG.dedupe_entities` facade | ✅ Shipped | Added merge orchestration and dry-run reporting. |
+| B | B.5 Notebook end-to-end check | ⏸ Deferred | Manual smoke test against `notebooks/local_falcor.db` still recommended before destructive runs. |
 
-**Merged to `main` at `6020f59`**, four commits past `bd37c75`. 57 / 57 tests green. Branch `feat/entity-resolution-on-ingest` deleted.
-
-**Next phase starts at Task B.0.** Resume with `superpowers:subagent-driven-development` on that task.
+**Current repository state:** Scenario A and Scenario B are implemented. The test suite is green at 62 / 62.
 
 ---
 
@@ -35,7 +33,7 @@
 These shaped the design and should drive defaults:
 
 1. **Zero exact `semantic_key` collisions exist in the real data.** The LLM-generated semantic keys are unique enough that the "exact collision" path never fires — the value of duplicate detection is entirely in the fuzzy similarity path.
-2. **Cross-label duplicates dominate**, e.g. `'State'` as `Type`, `Concept`, and `Class`; `'StateGraph'` as `Workflow`, `Concept`, and `Class`; `'ReAct agents'` vs `'ReAct agent'` vs `'ReAct'` under different labels. The default `same_label_only=True` would miss all of these. Both scenarios should default to `same_label_only=False`.
+2. **Cross-label duplicates dominate**, e.g. `'State'` as `Type`, `Concept`, and `Class`; `'StateGraph'` as `Workflow`, `Concept`, and `Class`; `'ReAct agents'` vs `'ReAct agent'` vs `'ReAct'` under different labels. The shipped implementation therefore performs duplicate inspection across all entities without label gating, and merged nodes preserve the union of ontology labels.
 3. **Latent bug in `save_entities_and_rels`.** `src/grawiki/db/base.py:320` writes `target=node.semantic_key` when building `__mentions__` relationships, but every other relationship uses `target=node.id`. Task B.0 verifies and fixes this before Scenario B runs — otherwise edge redirection during merges will miss `__mentions__`.
 
 ---
@@ -50,17 +48,17 @@ These shaped the design and should drive defaults:
 
 No new module, no new classes. The rewrite was ~40 production-code lines.
 
-### Scenario B — post-persistence deduplication ⏳ Next phase
+### Scenario B — post-persistence deduplication ✅ Shipped
 
-- **Modify** `src/grawiki/db/base.py` — fix `__mentions__` target bug (Task B.0), then add abstract `merge_entity_nodes(*, master_id, duplicate_ids)`.
-- **Modify** `src/grawiki/db/falkordb.py` — implement `merge_entity_nodes` (redirect edges + delete duplicates).
-- **Modify** `src/grawiki/db/cypher.py` — add Cypher builder(s) for edge redirection and node deletion.
-- **Create** `src/grawiki/similarity/deduplication.py` — small module with `MergeReport` dataclass and a `pick_master(nodes)` free function. No orchestrator class.
-- **Modify** `src/grawiki/rag/graph_rag.py` — add `dedupe_entities(...)` facade method that calls the finder and drives the DB primitive per group.
-- **Create** `tests/similarity/test_deduplication.py` — tests for `pick_master`.
-- **Modify** `tests/db/test_falkordb.py` — tests for `merge_entity_nodes` against a real FalkorDBLite.
-- **Modify** `tests/rag/test_graph_rag.py` — integration test for the full `dedupe_entities` flow.
-- **Modify** `docs/CODEMAP.md` — document the new primitive, helper module, and facade method.
+- **Modified** `src/grawiki/db/base.py` — `__mentions__` now uses entity ids; added `entity_relationship_counts(...)` and `merge_entity_nodes(...)`.
+- **Modified** `src/grawiki/db/falkordb.py` — implemented canonical id rewriting for entity persistence plus `merge_entity_nodes(...)`.
+- **Modified** `src/grawiki/db/cypher.py` — added id-based relationship upsert support used during merge recreation.
+- **Created** `src/grawiki/similarity/deduplication.py` — `MergeReport`, `pick_master(...)`, and merged-master construction helpers.
+- **Modified** `src/grawiki/rag/graph_rag.py` — added `dedupe_entities(...)` and merge-group construction.
+- **Created** `tests/similarity/test_deduplication.py` — tests for the deduplication helpers.
+- **Modified** `tests/db/test_falkordb.py` — added a real FalkorDBLite merge integration test.
+- **Modified** `tests/rag/test_graph_rag.py` — added integration coverage for `dedupe_entities(...)`.
+- **Modified** `docs/CODEMAP.md` — documented the new primitive, helper module, and facade method.
 
 ---
 
