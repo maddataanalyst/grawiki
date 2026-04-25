@@ -55,7 +55,7 @@ The repository is organized around a small number of major areas.
 - `tests/`: pytest suite for the facade, retrieval layer, graph models, extraction, query generation, and FalkorDB adapter.
 - `docs/`: public MkDocs documentation, including narrative pages and generated API reference pages under `docs/api/`.
 - `agent_tools/`: internal contributor and agent-facing guides, plans, and repository maps such as `agent_tools/CODEMAP.md`.
-- `notebooks/`: exploratory and debugging material rather than the main product surface.
+- `notebooks/`: focused tutorial notebooks plus supporting debug scripts and sample input data.
 
 ### Main package structure
 
@@ -97,12 +97,30 @@ It includes:
 - a project structure page,
 - generated API reference pages centered on `GraphRAG`.
 
+## Tutorial notebooks
+
+The repository ships three tutorial notebooks under `notebooks/`:
+
+- `01_ingest_and_deduplicate.ipynb`: step-by-step ingestion, entity inspection, duplicate finding, deduplication, and final querying.
+- `02_agent_memory_and_recall.ipynb`: a `pydantic_ai.Agent` wired to `GraphRAG.search(...)`, `GraphRAG.remember(...)`, and `GraphRAG.recall(...)`.
+- `03_visualize_graph.ipynb`: a lightweight graph view built with optional `networkx` and `matplotlib`.
+
+Run notebook 1 first. Notebook 2 reuses the same FalkorDB graph, and notebook 3 visualizes that populated graph.
+
+The sample texts used by the notebooks live in `notebooks/experimental_data/`. They are Medium.com articles by Filip Wojcik, sourced from `https://medium.com/@filip.igor.wojcik`, and are fully accessible without a subscription.
+
 ## Development
 
 Install development tooling:
 
 ```bash
 uv sync --group dev
+```
+
+Install FalkorDB support:
+
+```bash
+uv sync --group falkordb
 ```
 
 Install git hooks:
@@ -115,6 +133,24 @@ Run all configured checks manually:
 
 ```bash
 uv run pre-commit run --all-files
+```
+
+Install the optional notebook toolchain:
+
+```bash
+uv sync --extra notebooks
+```
+
+Install the optional visualization dependencies:
+
+```bash
+uv sync --extra viz
+```
+
+Install the full notebook stack with FalkorDB:
+
+```bash
+uv sync --group falkordb --extra notebooks --extra viz
 ```
 
 Install the optional documentation toolchain:

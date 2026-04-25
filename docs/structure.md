@@ -24,7 +24,8 @@ Internal contributor and agent-facing guidance, plans, and repository maps. `age
 
 ### `notebooks/`
 
-Exploratory and debugging material. Treat this area as research and support code rather than the primary product surface.
+Maintained tutorial notebooks plus supporting debug scripts and sample data.
+The main walkthrough now starts in `01_ingest_and_deduplicate.ipynb`, then continues into agent memory (notebook 02 - `02_agent_memory_and_recall.ipynb`) and visualization (notebook 03 - `03_visualize_graph.ipynb`).
 
 ## Important top-level files
 

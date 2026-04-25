@@ -52,7 +52,7 @@ The repository is organized around a few major areas:
 - `tests/` contains pytest coverage for the facade, retrieval, graph models, extraction, and the FalkorDB adapter.
 - `docs/` contains the public MkDocs site, including generated API pages under `docs/api/`.
 - `agent_tools/` contains internal contributor and agent-facing guidance such as `CODEMAP.md`.
-- `notebooks/` contains exploratory and debugging material.
+- `notebooks/` contains focused tutorial notebooks, supporting debug scripts, and sample text inputs.
 
 At the package level:
 
@@ -65,3 +65,21 @@ At the package level:
 - `grawiki.rag` exposes the `GraphRAG` facade.
 
 For a fuller map of the repository, see the dedicated project structure page.
+
+## Tutorial notebooks
+
+The maintained notebook flow now lives in three numbered notebooks under `notebooks/`:
+
+- `01_ingest_and_deduplicate.ipynb`
+- `02_agent_memory_and_recall.ipynb`
+- `03_visualize_graph.ipynb`
+
+Run notebook 1 first to build the local FalkorDB graph. Notebook 2 reuses that graph for agent memory demos, and notebook 3 visualizes it.
+
+To install the tutorial dependencies, use:
+
+```bash
+uv sync --group falkordb --extra notebooks --extra viz
+```
+
+The sample texts used there are Medium.com articles by Filip Wojcik from `https://medium.com/@filip.igor.wojcik`, and they are fully accessible without a subscription.

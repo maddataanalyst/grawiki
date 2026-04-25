@@ -32,7 +32,7 @@ and the FalkorDB adapter.
 
 ### `notebooks/`
 
-Exploratory and debugging material. This includes debug scripts, local database files, and experimental input data. Treat this area as research/support code rather than the primary application surface.
+Maintained tutorial notebooks plus supporting debug scripts, local database files, and experimental input data. The main walkthrough now lives in `01_ingest_and_deduplicate.ipynb`, `02_agent_memory_and_recall.ipynb`, and `03_visualize_graph.ipynb`.
 
 ### `docs/`
 
@@ -54,7 +54,7 @@ Minimal placeholder entrypoint. It currently just prints a message and is not th
 
 ### `pyproject.toml`
 
-Project metadata, dependency declarations, and development tool configuration.
+Project metadata, dependency declarations, and development tool configuration. Optional notebook and visualization installs live under `[project.optional-dependencies]` as `notebooks` and `viz`.
 
 ### `README.md`
 

@@ -30,7 +30,9 @@ flowchart TD
 ```
 
 The explicit stepwise methods also exist as public methods, which makes the
-pipeline easier to inspect in notebooks and debugging sessions.
+pipeline easier to inspect in notebooks and debugging sessions. The repository's
+numbered tutorial notebooks use these step methods directly rather than relying
+only on the one-shot `ingest(...)` wrapper.
 
 ## Memory and retrieval
 
