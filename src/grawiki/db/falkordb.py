@@ -278,14 +278,9 @@ class FalkorGraphDB(GraphDB):
                     ),
                     params,
                 )
-            elif rel.label == "__mentions__":
+            elif rel.label.startswith("__"):
                 self._query(
-                    link_nodes_cypher(
-                        "__mentions__",
-                        source_label="__chunk__",
-                        target_label="__entity__",
-                        target_match_field="id",
-                    ),
+                    upsert_rel_by_id_cypher(rel.label),
                     params,
                 )
             else:
@@ -428,7 +423,10 @@ class FalkorGraphDB(GraphDB):
 
         return_expression = f"{self._node_return_expression()}, score"
         hits: list[NodeHit] = []
+        existing_indexes = self._list_indexes()
         for label in labels:
+            if not self._has_index(existing_indexes, label, "embedding", "VECTOR"):
+                continue
             result = self.query_similar_nodes(
                 label,
                 query_embedding,
@@ -501,6 +499,63 @@ class FalkorGraphDB(GraphDB):
             system_label = self._canonical_system_label(cypher_labels)
             target = self._node_from_row(node_row, system_label=system_label)
             contexts.setdefault(source_id, []).append(
+                NeighborRelationship(
+                    source_id=source_id,
+                    source_name=source_name,
+                    relationship_label=relationship_label,
+                    target=target,
+                )
+            )
+        return contexts
+
+    async def recall_subgraph(
+        self,
+        *,
+        memory_ids: Sequence[str],
+        hops: int = 1,
+        limit_per_memory: int = 20,
+    ) -> dict[str, list[NeighborRelationship]]:
+        """Fetch a flattened k-hop recall subgraph for memory seeds."""
+
+        if hops < 1:
+            raise ValueError("recall_subgraph hops must be at least 1.")
+        if limit_per_memory < 1:
+            raise ValueError("recall_subgraph limit_per_memory must be at least 1.")
+
+        unique_ids = list(dict.fromkeys(memory_ids))
+        contexts: dict[str, list[NeighborRelationship]] = {
+            memory_id: [] for memory_id in unique_ids
+        }
+        if not unique_ids:
+            return contexts
+
+        query = (
+            "MATCH (seed:__memory__) WHERE seed.id IN $ids "
+            f"MATCH path=(seed)-[*1..{int(hops)}]-(node) "
+            "WHERE all(path_node IN nodes(path) "
+            "WHERE path_node.id = seed.id OR NOT '__memory__' IN labels(path_node)) "
+            "WITH seed, path, node "
+            "ORDER BY seed.id, length(path), node.name, node.id "
+            f"WITH seed, collect(DISTINCT path)[..{int(limit_per_memory)}] AS paths "
+            "UNWIND paths AS path "
+            "UNWIND relationships(path) AS rel "
+            "WITH DISTINCT seed, startNode(rel) AS source, endNode(rel) AS target, "
+            "type(rel) AS rel_label "
+            f"RETURN seed.id AS seed_id, source.id AS source_id, source.name AS source_name, rel_label, {self._node_return_expression(variable='target')}, labels(target) AS node_labels"
+        )
+        result = self.ro_query(query, {"ids": unique_ids})
+
+        for row in result.result_set:
+            seed_id = row[0]
+            source_id = row[1]
+            source_name = row[2] or ""
+            relationship_label = row[3] or ""
+            node_offset = 4
+            node_row = row[node_offset : node_offset + len(_NODE_COLUMNS)]
+            cypher_labels = row[node_offset + len(_NODE_COLUMNS)] or []
+            system_label = self._canonical_system_label(cypher_labels)
+            target = self._node_from_row(node_row, system_label=system_label)
+            contexts.setdefault(seed_id, []).append(
                 NeighborRelationship(
                     source_id=source_id,
                     source_name=source_name,
@@ -657,6 +712,32 @@ class FalkorGraphDB(GraphDB):
         self._query(
             "MATCH (n:__entity__) WHERE n.id IN $ids DELETE n",
             {"ids": dup_ids},
+        )
+
+    async def delete_memory(self, memory_id: str) -> None:
+        """Delete one memory and prune directly-mentioned orphan entities."""
+
+        candidate_rows = self.ro_query(
+            "MATCH (:__memory__ {id: $memory_id})-[:__mentions__]->(e:__entity__) "
+            "RETURN DISTINCT e.id",
+            {"memory_id": memory_id},
+        ).result_set
+        candidate_ids = [str(row[0]) for row in candidate_rows]
+
+        self._query(
+            "MATCH (m:__memory__ {id: $memory_id}) DETACH DELETE m",
+            {"memory_id": memory_id},
+        )
+
+        if not candidate_ids:
+            return
+
+        self._query(
+            "MATCH (e:__entity__) WHERE e.id IN $ids "
+            "OPTIONAL MATCH (e)-[r]-() "
+            "WITH e, count(r) AS rel_count "
+            "WHERE rel_count = 0 DELETE e",
+            {"ids": candidate_ids},
         )
 
     def ro_query(self, query: str, params: dict[str, Any] | None = None) -> Any:

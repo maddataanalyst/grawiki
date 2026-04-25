@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -12,7 +13,7 @@ from pydantic_ai import Embedder
 
 from grawiki.core.commons import Chunk, Document
 from grawiki.core.embedding import Embedding
-from grawiki.db.base import GraphDB, NodeHit
+from grawiki.db.base import GraphDB, NeighborRelationship, NodeHit
 from grawiki.doc_processing.chunkers import Chunker
 from grawiki.doc_processing.document_processing import chunk_document, read_document
 from grawiki.graph.extraction import (
@@ -23,6 +24,7 @@ from grawiki.graph.models import (
     ChunkNode,
     DocumentNode,
     KnowledgeGraph,
+    MemoryNode,
     Node,
     Relationship,
 )
@@ -41,6 +43,7 @@ from grawiki.similarity.models import (
 from grawiki.similarity.similarity_finder import EntitySimilarityFinder
 
 logger = logging.getLogger(__name__)
+MEMORY_RELATED_LABEL = "__related__"
 
 
 class GraphRAG:
@@ -154,7 +157,11 @@ class GraphRAG:
                 f"(got {entity_resolution_threshold!r})."
             )
         self._retrievers = retrievers or (
-            TextRetriever(db=db, embedding=self._embedding),
+            TextRetriever(
+                db=db,
+                embedding=self._embedding,
+                search_labels=[ChunkNode.system_label, MemoryNode.system_label],
+            ),
             KeywordsPathRetriever(model=model, db=db, embedding=self._embedding),
         )
 
@@ -344,7 +351,7 @@ class GraphRAG:
 
         async def extract_one(chunk: Chunk) -> tuple[str, KnowledgeGraph]:
             async with semaphore:
-                graph = await self._extractor.extract(chunk)
+                graph = await self._extractor.extract(chunk.content)
                 return chunk.id, graph
 
         results = await asyncio.gather(*(extract_one(c) for c in chunks))
@@ -352,21 +359,21 @@ class GraphRAG:
 
     async def persist_entities_and_relationships(
         self,
-        chunks: list[Chunk],
-        chunk_graphs: dict[str, KnowledgeGraph],
+        owner_ids: Sequence[str],
+        owner_graphs: dict[str, KnowledgeGraph],
     ) -> None:
         """Persist extracted entities and relationships.
 
         Parameters
         ----------
-        chunks : list[Chunk]
-            Chunks that own the extracted graphs.
-        chunk_graphs : dict[str, KnowledgeGraph]
-            Extracted graphs keyed by chunk identifier.
+        owner_ids : Sequence[str]
+            Node identifiers that own the extracted graphs.
+        owner_graphs : dict[str, KnowledgeGraph]
+            Extracted graphs keyed by owner identifier.
         """
 
         entity_dim: int | None = None
-        for graph in chunk_graphs.values():
+        for graph in owner_graphs.values():
             for node in graph.nodes:
                 if node.embedding:
                     entity_dim = len(node.embedding)
@@ -374,13 +381,13 @@ class GraphRAG:
             if entity_dim is not None:
                 break
 
-        logger.info("Persisting entities for %s chunk graphs", len(chunk_graphs))
+        logger.info("Persisting entities for %s owner graphs", len(owner_graphs))
         await self._db.setup(
             embedding_dimensions={"__entity__": entity_dim}
             if entity_dim is not None
             else None
         )
-        await self._db.save_entities_and_rels(chunks, chunk_graphs)
+        await self._db.save_entities_and_rels(owner_ids, owner_graphs)
 
     async def find_similar_entities(
         self,
@@ -682,7 +689,10 @@ class GraphRAG:
         chunk_graphs = await self.extract_kg_per_chunk(chunks)
         if self.resolve_entities_on_ingest:
             chunk_graphs = await self._resolve_extracted_entities(chunk_graphs)
-        await self.persist_entities_and_relationships(chunks, chunk_graphs)
+        await self.persist_entities_and_relationships(
+            [chunk.id for chunk in chunks],
+            chunk_graphs,
+        )
         logger.info("Completed ingestion for %s", path)
 
     async def ingest_text(self, text: str, title: str) -> None:
@@ -714,8 +724,83 @@ class GraphRAG:
         chunk_graphs = await self.extract_kg_per_chunk(chunks)
         if self.resolve_entities_on_ingest:
             chunk_graphs = await self._resolve_extracted_entities(chunk_graphs)
-        await self.persist_entities_and_relationships(chunks, chunk_graphs)
+        await self.persist_entities_and_relationships(
+            [chunk.id for chunk in chunks],
+            chunk_graphs,
+        )
         logger.info("Completed ingestion for text document %r", title)
+
+    async def remember(
+        self,
+        memory: MemoryNode | str,
+        *,
+        memory_id: str | None = None,
+        name: str | None = None,
+        semantic_key: str | None = None,
+        metadata: dict[str, str] | None = None,
+        related_node_ids: Sequence[str] = (),
+    ) -> MemoryNode:
+        """Persist one memory, replacing an existing memory when requested.
+
+        Parameters
+        ----------
+        memory : MemoryNode | str
+            Memory payload to persist. Raw strings are normalized into a new
+            :class:`~grawiki.graph.models.MemoryNode`.
+        memory_id : str | None, optional
+            Existing memory identifier to replace. When omitted, ``memory.id`` is
+            used as-is.
+        name : str | None, optional
+            Optional memory name override. Primarily useful when ``memory`` is a
+            raw string.
+        semantic_key : str | None, optional
+            Optional semantic key override. Defaults to the final memory id.
+        metadata : dict[str, str] | None, optional
+            Optional metadata merged into the memory metadata.
+        related_node_ids : Sequence[str], optional
+            Existing node ids that should be explicitly linked from the memory.
+
+        Returns
+        -------
+        MemoryNode
+            Persisted memory payload including its final id.
+        """
+
+        persisted_memory = self._memory_for_persistence(
+            memory,
+            memory_id=memory_id,
+            name=name,
+            semantic_key=semantic_key,
+            metadata=metadata,
+        )
+        logger.info("Remembering memory %s", persisted_memory.id)
+        await self._db.setup()
+        if memory_id is not None:
+            await self._db.delete_memory(memory_id)
+
+        persisted_memory.embedding = await self._embed_text(persisted_memory.content)
+        await self._db.setup(
+            embedding_dimensions={
+                MemoryNode.system_label: len(persisted_memory.embedding)
+            }
+            if persisted_memory.embedding
+            else None
+        )
+        await self._db.upsert_nodes([persisted_memory])
+        await self._persist_memory_relationships(
+            persisted_memory.id,
+            related_node_ids=related_node_ids,
+        )
+
+        memory_graph = await self._extractor.extract(persisted_memory.content)
+        owner_graphs = {persisted_memory.id: memory_graph}
+        if self.resolve_entities_on_ingest:
+            owner_graphs = await self._resolve_extracted_entities(owner_graphs)
+        await self.persist_entities_and_relationships(
+            [persisted_memory.id], owner_graphs
+        )
+        logger.info("Completed remember flow for memory %s", persisted_memory.id)
+        return persisted_memory
 
     async def search(
         self,
@@ -779,6 +864,159 @@ class GraphRAG:
         )[:limit]
         return sorted_hits
 
+    async def recall(
+        self,
+        query: str,
+        *,
+        user_id: str | None = None,
+        limit: int = 5,
+        hops: int = 1,
+        limit_per_hop: int = 5,
+    ) -> list[NodeHit]:
+        """Search memories and attach connected graph context.
+
+        Parameters
+        ----------
+        query : str
+            Raw user query text.
+        user_id : str | None, optional
+            Optional memory-owner filter applied after memory retrieval.
+        limit : int, optional
+            Maximum number of memories returned.
+        hops : int, optional
+            Number of graph-expansion hops to include.
+        limit_per_hop : int, optional
+            Maximum recall paths expanded per memory seed.
+        """
+
+        if limit < 1 or hops < 1:
+            return []
+
+        search_limit = limit if user_id is None else max(limit * 5, limit)
+        memory_hits = await self._search_memories(query, limit=search_limit)
+        if user_id is not None:
+            memory_hits = [
+                hit for hit in memory_hits if _memory_user_id(hit.node) == user_id
+            ]
+        memory_hits = memory_hits[:limit]
+        if not memory_hits:
+            return []
+
+        contexts_by_seed = await self._db.recall_subgraph(
+            memory_ids=[hit.node.id for hit in memory_hits],
+            hops=hops,
+            limit_per_memory=limit_per_hop,
+        )
+        return [
+            NodeHit(
+                node=_memory_node_with_context(
+                    hit.node, contexts_by_seed.get(hit.node.id, [])
+                ),
+                score=hit.score,
+                matched_on=hit.matched_on,
+            )
+            for hit in memory_hits
+        ]
+
+    async def _embed_text(self, text: str) -> list[float]:
+        """Embed one arbitrary text string."""
+
+        result = await self._embedding.embed_documents([text])
+        return list(result.embeddings[0])
+
+    def _memory_for_persistence(
+        self,
+        memory: MemoryNode | str,
+        *,
+        memory_id: str | None,
+        name: str | None = None,
+        semantic_key: str | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> MemoryNode:
+        """Return a persisted memory payload with the canonical identifier."""
+
+        if isinstance(memory, str):
+            final_id = memory_id or str(uuid.uuid4())
+            return MemoryNode(
+                id=final_id,
+                semantic_key=semantic_key or final_id,
+                name=name or _default_memory_name(memory, final_id),
+                content=memory,
+                metadata=dict(metadata or {}),
+            )
+
+        final_id = memory_id or memory.id
+        merged_metadata = dict(memory.metadata)
+        if metadata:
+            merged_metadata.update(metadata)
+        return memory.model_copy(
+            update={
+                "id": final_id,
+                "name": name or memory.name,
+                "semantic_key": semantic_key
+                or _default_memory_semantic_key(memory, final_id),
+                "metadata": merged_metadata,
+            },
+            deep=True,
+        )
+
+    async def _persist_memory_relationships(
+        self,
+        memory_id: str,
+        *,
+        related_node_ids: Sequence[str],
+    ) -> None:
+        """Persist explicit memory links to existing nodes."""
+
+        unique_related_ids = [
+            node_id
+            for node_id in dict.fromkeys(related_node_ids)
+            if node_id and node_id != memory_id
+        ]
+        if not unique_related_ids:
+            return
+        await self._db.upsert_relationships(
+            [
+                Relationship(
+                    id=str(uuid.uuid4()),
+                    source=memory_id,
+                    target=node_id,
+                    label=MEMORY_RELATED_LABEL,
+                )
+                for node_id in unique_related_ids
+            ]
+        )
+
+    async def _search_memories(self, query: str, *, limit: int) -> list[NodeHit]:
+        """Return memory-only hits merged from vector and full-text search."""
+
+        vector_hits: list[NodeHit] = []
+        query_result = await self._embedding.embed_query(query)
+        if query_result.embeddings:
+            vector_hits = await self._db.vector_search(
+                labels=[MemoryNode.system_label],
+                query_embedding=list(query_result.embeddings[0]),
+                limit=limit,
+            )
+
+        fulltext_hits = await self._db.fulltext_search(
+            labels=[MemoryNode.system_label],
+            query_text=query,
+            limit=limit,
+        )
+
+        ordered_ids: list[str] = []
+        best_hits: dict[str, NodeHit] = {}
+        for hit in [*vector_hits, *fulltext_hits]:
+            node_id = hit.node.id
+            if node_id not in best_hits:
+                ordered_ids.append(node_id)
+                best_hits[node_id] = hit
+                continue
+            if hit.score > best_hits[node_id].score:
+                best_hits[node_id] = hit
+        return [best_hits[node_id] for node_id in ordered_ids[:limit]]
+
 
 def _flatten_collision_group(
     group: SemanticKeyCollisionCandidates,
@@ -794,3 +1032,57 @@ def _flatten_collision_group(
             if hit.score >= min_score:
                 flattened.setdefault(hit.node.id, hit.node)
     return list(flattened.values())
+
+
+def _memory_user_id(node: Node) -> str | None:
+    """Return the memory owner id stored in metadata when present."""
+
+    metadata = getattr(node, "metadata", {})
+    if not isinstance(metadata, dict):
+        return None
+    value = metadata.get("user_id")
+    return value if isinstance(value, str) else None
+
+
+def _default_memory_semantic_key(memory: MemoryNode, final_id: str) -> str:
+    """Return the default semantic key for a persisted memory."""
+
+    if memory.semantic_key == memory.id:
+        return final_id
+    return memory.semantic_key
+
+
+def _default_memory_name(content: str, memory_id: str) -> str:
+    """Return a short generated name for a raw-text memory."""
+
+    cleaned_lines = [" ".join(line.split()) for line in content.splitlines()]
+    first_non_empty = next((line for line in cleaned_lines if line), "")
+    if first_non_empty:
+        return first_non_empty[:80]
+    return f"Memory {memory_id}"
+
+
+def _memory_node_with_context(
+    node: Node,
+    relationships: Sequence[NeighborRelationship],
+) -> Node:
+    """Attach rendered recall context to one memory node."""
+
+    properties = dict(node.properties)
+    properties["recall_context"] = _build_recall_text(relationships)
+    return node.model_copy(update={"properties": properties}, deep=True)
+
+
+def _build_recall_text(relationships: Sequence[NeighborRelationship]) -> str:
+    """Render recall graph context as readable text."""
+
+    if not relationships:
+        return "No connected graph context found."
+    return "\n".join(
+        (
+            f"{relationship.source_name or relationship.source_id} "
+            f"-[{relationship.relationship_label}]-> "
+            f"{relationship.target.name or relationship.target.id}"
+        )
+        for relationship in relationships
+    )

@@ -11,6 +11,7 @@ from grawiki.graph.models import (
     ChunkNode,
     DocumentNode,
     KnowledgeGraph,
+    MemoryNode,
     Node,
     Relationship,
 )
@@ -126,7 +127,9 @@ def test_save_documents_chunks_entities_and_relationships_with_indexes(
     }
 
     asyncio.run(graph_db.save_docs_and_chunks_to_db([document_node], chunk_nodes))
-    asyncio.run(graph_db.save_entities_and_rels(chunks, chunk_graphs))
+    asyncio.run(
+        graph_db.save_entities_and_rels([chunk.id for chunk in chunks], chunk_graphs)
+    )
 
     assert graph_db.ro_query("MATCH (d:__document__) RETURN count(d)").result_set == [
         [1]
@@ -223,14 +226,14 @@ def test_vector_search_requires_query_embedding(graph_db: FalkorGraphDB) -> None
         asyncio.run(graph_db.search("hello", method="vector"))
 
 
-def test_save_entities_and_rels_rejects_unknown_chunk(graph_db: FalkorGraphDB) -> None:
-    """Chunk graphs should fail fast when their owning chunk is missing."""
+def test_save_entities_and_rels_rejects_unknown_owner(graph_db: FalkorGraphDB) -> None:
+    """Owner graphs should fail fast when their owning node id is missing."""
 
-    chunks = [Chunk(id="chunk_1", document_id="doc_1", content="hello")]
-    chunk_graphs = {"missing_chunk": KnowledgeGraph()}
+    owner_ids = ["chunk_1"]
+    owner_graphs = {"missing_chunk": KnowledgeGraph()}
 
-    with pytest.raises(ValueError, match="Unknown chunk ids"):
-        asyncio.run(graph_db.save_entities_and_rels(chunks, chunk_graphs))
+    with pytest.raises(ValueError, match="Unknown owner ids"):
+        asyncio.run(graph_db.save_entities_and_rels(owner_ids, owner_graphs))
 
 
 def test_save_entities_and_rels_rejects_relationships_with_unknown_nodes(
@@ -238,8 +241,7 @@ def test_save_entities_and_rels_rejects_relationships_with_unknown_nodes(
 ) -> None:
     """Relationships should reference nodes present in the same chunk graph."""
 
-    chunks = [Chunk(id="chunk_1", document_id="doc_1", content="hello")]
-    chunk_graphs = {
+    owner_graphs = {
         "chunk_1": KnowledgeGraph(
             nodes=[],
             relationships=[
@@ -254,7 +256,7 @@ def test_save_entities_and_rels_rejects_relationships_with_unknown_nodes(
     }
 
     with pytest.raises(ValueError, match="Relationship references a node missing"):
-        asyncio.run(graph_db.save_entities_and_rels(chunks, chunk_graphs))
+        asyncio.run(graph_db.save_entities_and_rels(["chunk_1"], owner_graphs))
 
 
 @pytest.fixture
@@ -323,7 +325,9 @@ def populated_graph_db(graph_db: FalkorGraphDB) -> FalkorGraphDB:
     }
 
     asyncio.run(graph_db.save_docs_and_chunks_to_db([document_node], chunk_nodes))
-    asyncio.run(graph_db.save_entities_and_rels(chunks, chunk_graphs))
+    asyncio.run(
+        graph_db.save_entities_and_rels([chunk.id for chunk in chunks], chunk_graphs)
+    )
     return graph_db
 
 
@@ -344,6 +348,199 @@ def test_ensure_indexes_creates_indexes_for_memory_label(
     assert "FULLTEXT" in indexes[("__memory__", "content")][2]["content"]
     assert "VECTOR" in indexes[("__memory__", "embedding")][2]["embedding"]
     assert indexes[("__memory__", "embedding")][3]["embedding"]["dimension"] == 3
+
+
+def test_save_entities_and_rels_supports_memory_owners(graph_db: FalkorGraphDB) -> None:
+    """Owner-based persistence should link memories to extracted entities."""
+
+    memory = MemoryNode(
+        id="memory_1",
+        semantic_key="memory_1",
+        name="Agent memory",
+        content="Remember ReAct.",
+        metadata={"user_id": "user-1"},
+    )
+    asyncio.run(graph_db.upsert_nodes([memory]))
+    asyncio.run(
+        graph_db.save_entities_and_rels(
+            [memory.id],
+            {
+                memory.id: KnowledgeGraph(
+                    nodes=[
+                        Node(
+                            id="entity_1",
+                            label="Concept",
+                            semantic_key="concept_react",
+                            name="ReAct",
+                            embedding=[1.0, 0.0, 0.0],
+                        )
+                    ],
+                    relationships=[],
+                )
+            },
+        )
+    )
+
+    assert graph_db.ro_query(
+        "MATCH (:__memory__ {id: 'memory_1'})-[:__mentions__]->"
+        "(:__entity__ {id: 'entity_1'}) RETURN count(*)"
+    ).result_set == [[1]]
+
+
+def test_upsert_relationships_supports_memory_links_to_any_node_ids(
+    graph_db: FalkorGraphDB,
+) -> None:
+    """System id-based links should allow memory relationships to any node family."""
+
+    memory = MemoryNode(
+        id="memory_1",
+        semantic_key="memory_1",
+        name="Agent memory",
+        content="Remember chunk and entity.",
+        metadata={"user_id": "user-1"},
+    )
+    chunk = ChunkNode(
+        id="chunk_1",
+        semantic_key="chunk_chunk_1",
+        name="Chunk chunk_1",
+        document_id="doc_1",
+        content="Chunk content.",
+    )
+    entity = Node(
+        id="entity_1",
+        label="Concept",
+        semantic_key="concept_react",
+        name="ReAct",
+    )
+    asyncio.run(graph_db.upsert_nodes([memory, chunk, entity]))
+    asyncio.run(
+        graph_db.upsert_relationships(
+            [
+                Relationship(
+                    id="rel_chunk",
+                    source="memory_1",
+                    target="chunk_1",
+                    label="__related__",
+                ),
+                Relationship(
+                    id="rel_entity",
+                    source="memory_1",
+                    target="entity_1",
+                    label="__related__",
+                ),
+            ]
+        )
+    )
+
+    assert graph_db.ro_query(
+        "MATCH (:__memory__ {id: 'memory_1'})-[:__related__]->(:__chunk__ {id: 'chunk_1'}) "
+        "RETURN count(*)"
+    ).result_set == [[1]]
+    assert graph_db.ro_query(
+        "MATCH (:__memory__ {id: 'memory_1'})-[:__related__]->(:__entity__ {id: 'entity_1'}) "
+        "RETURN count(*)"
+    ).result_set == [[1]]
+
+
+def test_delete_memory_detaches_links_and_prunes_zero_relation_entities(
+    graph_db: FalkorGraphDB,
+) -> None:
+    """Deleting a memory should remove it and prune directly-mentioned orphan entities."""
+
+    memory = MemoryNode(
+        id="memory_1",
+        semantic_key="memory_1",
+        name="Agent memory",
+        content="Remember ReAct.",
+        metadata={"user_id": "user-1"},
+    )
+    entity = Node(
+        id="entity_1",
+        label="Concept",
+        semantic_key="concept_react",
+        name="ReAct",
+    )
+    asyncio.run(graph_db.upsert_nodes([memory, entity]))
+    asyncio.run(
+        graph_db.upsert_relationships(
+            [
+                Relationship(
+                    id="rel_mentions",
+                    source="memory_1",
+                    target="entity_1",
+                    label="__mentions__",
+                )
+            ]
+        )
+    )
+
+    asyncio.run(graph_db.delete_memory("memory_1"))
+
+    assert graph_db.ro_query(
+        "MATCH (m:__memory__ {id: 'memory_1'}) RETURN count(m)"
+    ).result_set == [[0]]
+    assert graph_db.ro_query(
+        "MATCH (e:__entity__ {id: 'entity_1'}) RETURN count(e)"
+    ).result_set == [[0]]
+
+
+def test_delete_memory_keeps_entities_with_remaining_relationships(
+    graph_db: FalkorGraphDB,
+) -> None:
+    """Deleting a memory should keep directly-mentioned entities that still have edges."""
+
+    memory = MemoryNode(
+        id="memory_1",
+        semantic_key="memory_1",
+        name="Agent memory",
+        content="Remember ReAct.",
+        metadata={"user_id": "user-1"},
+    )
+    chunk = ChunkNode(
+        id="chunk_1",
+        semantic_key="chunk_chunk_1",
+        name="Chunk chunk_1",
+        document_id="doc_1",
+        content="ReAct is important.",
+    )
+    entity = Node(
+        id="entity_1",
+        label="Concept",
+        semantic_key="concept_react",
+        name="ReAct",
+    )
+    asyncio.run(graph_db.upsert_nodes([memory, chunk, entity]))
+    asyncio.run(
+        graph_db.upsert_relationships(
+            [
+                Relationship(
+                    id="rel_memory_mentions",
+                    source="memory_1",
+                    target="entity_1",
+                    label="__mentions__",
+                ),
+                Relationship(
+                    id="rel_chunk_mentions",
+                    source="chunk_1",
+                    target="entity_1",
+                    label="__mentions__",
+                ),
+            ]
+        )
+    )
+
+    asyncio.run(graph_db.delete_memory("memory_1"))
+
+    assert graph_db.ro_query(
+        "MATCH (m:__memory__ {id: 'memory_1'}) RETURN count(m)"
+    ).result_set == [[0]]
+    assert graph_db.ro_query(
+        "MATCH (e:__entity__ {id: 'entity_1'}) RETURN count(e)"
+    ).result_set == [[1]]
+    assert graph_db.ro_query(
+        "MATCH (:__chunk__ {id: 'chunk_1'})-[:__mentions__]->(:__entity__ {id: 'entity_1'}) "
+        "RETURN count(*)"
+    ).result_set == [[1]]
 
 
 def test_fulltext_search_returns_node_hits_with_subclasses(
@@ -455,6 +652,82 @@ def test_neighbor_relationships_returns_one_hop_context(
         and relationship.target.name == "Alan Turing"
         for relationship in contexts["entity_comp"]
     )
+
+
+def test_recall_subgraph_uses_k_hop_paths_without_crossing_other_memories(
+    graph_db: FalkorGraphDB,
+) -> None:
+    """Recall should expand through entities but not traverse into other memories."""
+
+    memory_1 = MemoryNode(
+        id="memory_1",
+        semantic_key="memory_1",
+        name="Seed memory",
+        content="Remember ReAct.",
+        metadata={"user_id": "user-1"},
+    )
+    memory_2 = MemoryNode(
+        id="memory_2",
+        semantic_key="memory_2",
+        name="Other memory",
+        content="Also mentions ReAct.",
+        metadata={"user_id": "user-2"},
+    )
+    react = Node(
+        id="entity_react",
+        label="Concept",
+        semantic_key="concept_react",
+        name="ReAct",
+    )
+    worker = Node(
+        id="entity_worker",
+        label="Concept",
+        semantic_key="concept_worker",
+        name="Worker",
+    )
+
+    asyncio.run(graph_db.upsert_nodes([memory_1, memory_2, react, worker]))
+    asyncio.run(
+        graph_db.upsert_relationships(
+            [
+                Relationship(
+                    id="rel_memory_1",
+                    source="memory_1",
+                    target="entity_react",
+                    label="__mentions__",
+                ),
+                Relationship(
+                    id="rel_memory_2",
+                    source="memory_2",
+                    target="entity_react",
+                    label="__mentions__",
+                ),
+                Relationship(
+                    id="rel_entity",
+                    source="entity_react",
+                    target="entity_worker",
+                    label="RELATED_TO",
+                ),
+            ]
+        )
+    )
+
+    contexts = asyncio.run(
+        graph_db.recall_subgraph(memory_ids=["memory_1"], hops=2, limit_per_memory=10)
+    )
+
+    assert list(contexts) == ["memory_1"]
+    assert [
+        (
+            relationship.source_id,
+            relationship.relationship_label,
+            relationship.target.id,
+        )
+        for relationship in contexts["memory_1"]
+    ] == [
+        ("memory_1", "__mentions__", "entity_react"),
+        ("entity_react", "RELATED_TO", "entity_worker"),
+    ]
 
 
 def test_merge_entity_nodes_redirects_and_deduplicates_relationships(

@@ -79,6 +79,15 @@ class FakeGraphDB(GraphDB):
     ) -> dict[str, list[NeighborRelationship]]:
         return {node_id: [] for node_id in node_ids}
 
+    async def recall_subgraph(
+        self,
+        *,
+        memory_ids: Sequence[str],
+        hops: int = 1,
+        limit_per_memory: int = 20,
+    ) -> dict[str, list[NeighborRelationship]]:
+        return {memory_id: [] for memory_id in memory_ids}
+
     async def list_entities(self, *, include_embeddings: bool = False) -> list[Node]:
         return []
 
@@ -99,6 +108,9 @@ class FakeGraphDB(GraphDB):
         master: Node,
         duplicate_ids: Sequence[str],
     ) -> None:
+        pass
+
+    async def delete_memory(self, memory_id: str) -> None:
         pass
 
 

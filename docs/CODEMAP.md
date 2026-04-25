@@ -13,8 +13,8 @@ GraWiki is a Python project for:
 5. Searching the stored graph with full-text and vector retrieval.
 6. Inspecting potentially duplicate entities through semantic-key collision checks and pluggable similarity matchers.
 
-In the future: part of the agentic memory. Memories will be added as a separate __entity__, indexed by time.
-Agent will have an option to "recall" -- run dedicated graph search on memories and linked entities.
+Agent memory is now stored as dedicated `__memory__` nodes.
+The facade supports `remember(...)` to persist or replace memories and `recall(...)` to search memories plus linked graph context.
 
 In short - this project tries to be a lightweight, simplified version of Llama Index graph RAG + graph memory.
 
@@ -132,7 +132,7 @@ Main model groups:
 - System/internal node types:
   - `DocumentNode`: persisted representation of a source document.
   - `ChunkNode`: persisted representation of a document chunk.
-  - `MemoryNode`: reserved model for agent memory storage.
+- `MemoryNode`: persisted representation of an agent memory, including `content`, `creation_date`, and caller metadata such as `user_id`.
 
 This is the canonical schema module for the project. The transient
 extractor-facing types (``ExtractedNode``, ``ExtractedRelationship``,
@@ -163,7 +163,7 @@ Key responsibilities:
 - Defines `KnowledgeGraphExtractor`.
 - Defines `KnowledgeGraphExtractorProtocol` for injecting alternate extractors in tests and notebooks.
 - Defines the transient LLM-facing types: `ExtractedNode`, `ExtractedRelationship`, `ExtractedKnowledgeGraph`.
-- Runs a `pydantic_ai.Agent` against chunk text.
+- Runs a `pydantic_ai.Agent` against arbitrary source text.
 - Produces structured `ExtractedKnowledgeGraph` output.
 - Repairs missing node references when relationships point to node names not present in the output.
 - Converts extractor output into durable `KnowledgeGraph` objects via the module-level `_node_from_extracted` helper.
@@ -211,6 +211,7 @@ Key responsibilities:
 - Builds generic entity-to-entity relationship upserts.
 - Builds id-based relationship upserts used by merge rewrites.
 - Builds explicit system-link queries such as `__has_chunk__` and `__mentions__`.
+- Keeps `__mentions__` reusable for both chunk-to-entity and memory-to-entity links.
 - Sanitizes labels and relationship types into backend-safe Cypher identifiers.
 - Injects optional embedding assignments into query strings.
 
@@ -227,6 +228,7 @@ Key responsibilities:
 - Creates and tracks full-text and vector indexes, including per-label vector dimensions.
 - Persists nodes and relationships through `upsert_nodes(...)` and `upsert_relationships(...)`.
 - Stores entity label sets both as real Cypher labels and as an alphabetically sorted `labels` array property.
+- Deletes memories with `DETACH DELETE` semantics and prunes directly-mentioned entities that become true orphans.
 - Rewrites and deduplicates incident edges during `merge_entity_nodes(...)`.
 - Exposes raw full-text search, vector search, and neighbor expansion primitives.
 - Serializes embeddings and metadata into backend-compatible forms.
@@ -335,8 +337,10 @@ Key responsibilities:
 - Exposes stepwise public helpers for notebooks and debugging: `read_document(...)`, `chunk_document(...)`, `embed_document(...)`, `embed_chunks(...)`, `build_document_node(...)`, `build_chunk_nodes(...)`, `persist_document_and_chunks(...)`, `extract_kg_per_chunk(...)`, and `persist_entities_and_relationships(...)`.
 - Reads and chunks documents.
 - Embeds documents and chunks with the shared embedding client.
+- Persists conversation-derived memories without chunking via `remember(...)`.
 - Persists documents, chunks, entities, and relationships through `GraphDB`.
 - Delegates retrieval search to configured `Retriever` implementations.
+- Supports memory-only recall via `recall(...)`, using DB-side Cypher path expansion rather than application-level graph walking.
 - Exposes entity similarity helpers through `find_similar_entities(...)` and `find_entity_collision_candidates(...)`.
 - Exposes entity duplicate-finding helpers through `find_similar_entities(...)`, `find_entity_collision_candidates(...)`, `find_entity_duplicate_candidates(...)`, and `dedupe_entities(...)`.
 - Supports dependency injection through the `embedding=`, `kg_extractor=`, `retrievers=`, `similarity_finder=`, `resolve_entities_on_ingest=`, and `entity_resolution_threshold=` constructor arguments.
@@ -345,7 +349,9 @@ Important public methods:
 
 - `GraphRAG.ingest(path)`: main file-ingestion entrypoint.
 - `GraphRAG.ingest_text(text, title)`: ingest text already available in memory.
+- `GraphRAG.remember(memory, memory_id=None, ...)`: store or replace one memory without chunking; accepts either a `MemoryNode` or raw text and can add explicit links to existing node ids.
 - `GraphRAG.search(query)`: retrieve flat `NodeHit` results.
+- `GraphRAG.recall(query, user_id=None, hops=1, ...)`: search only memories, optionally filter by `metadata["user_id"]`, then attach DB-expanded connected graph context.
 - `GraphRAG.find_similar_entities(entity)`: inspect candidates for one entity using the configured similarity finder.
 - `GraphRAG.find_entity_collision_candidates()`: inspect semantic-key collision groups and their candidate matches.
 - `GraphRAG.find_entity_duplicate_candidates()`: run the two-step heuristic combining exact semantic-key collisions and broader matcher-based duplicate scanning.
@@ -364,14 +370,16 @@ The main runtime path currently looks like this:
 6. `GraphRAG.persist_document_and_chunks()` ensures indexes and persists documents, chunks, and `__has_chunk__` relationships.
 7. `GraphRAG.extract_kg_per_chunk()` runs `KnowledgeGraphExtractor.extract(...)` concurrently across chunks.
 8. When `resolve_entities_on_ingest=True`, `GraphRAG._resolve_extracted_entities()` matches freshly-extracted entities against persisted ones via the configured `EntitySimilarityFinder`; hits above `entity_resolution_threshold` cause the extracted node and its relationship endpoints to be rewritten to the persisted node's id so the persistence step reuses existing entities instead of creating duplicates. Skipped entirely when the flag is `False` (the default).
-9. `GraphRAG.persist_entities_and_relationships()` ensures entity indexes and persists extracted entities, `__mentions__` links keyed by entity id, and entity relationships.
-10. `Retriever.fulltext(...)` or `Retriever.vector(...)` executes query-time retrieval; vector queries are embedded in the retrieval layer, not in the DB adapter.
-11. `grawiki.GraphRAG.search()` returns flat `NodeHit` results.
-12. `EntitySimilarityFinder.find_semantic_key_collisions()` detects exact semantic-key duplicates.
-13. `EntitySimilarityFinder.find_collision_candidates()` ranks candidates inside those exact collision groups.
-14. `EntitySimilarityFinder.find_similarity_candidates()` performs the broader matcher-based duplicate scan across persisted entities.
-15. `EntitySimilarityFinder.find_duplicate_candidates()` combines both stages into one duplicate-inspection report.
-16. `GraphRAG.dedupe_entities()` converts duplicate candidates into merge groups, chooses masters with `similarity/deduplication.py`, and delegates the destructive graph rewrite to `GraphDB.merge_entity_nodes()`.
+9. `GraphRAG.persist_entities_and_relationships()` ensures entity indexes and persists extracted entities, owner-to-entity `__mentions__` links, and entity relationships.
+10. `GraphRAG.remember()` normalizes either a `MemoryNode` or raw text into one persisted memory, optionally replaces an older memory with the same `memory_id`, adds explicit memory-to-node links when requested, extracts entities directly from the memory text, and persists the resulting memory/entity graph.
+11. `Retriever.fulltext(...)` or `Retriever.vector(...)` executes query-time retrieval; vector queries are embedded in the retrieval layer, not in the DB adapter.
+12. `grawiki.GraphRAG.search()` returns flat `NodeHit` results across chunks, memories, and entities.
+13. `grawiki.GraphRAG.recall()` searches only `__memory__` nodes, optionally post-filters by `metadata["user_id"]`, then asks the DB adapter for an undirected variable-length-path recall subgraph while blocking traversal into other memory nodes.
+14. `EntitySimilarityFinder.find_semantic_key_collisions()` detects exact semantic-key duplicates.
+15. `EntitySimilarityFinder.find_collision_candidates()` ranks candidates inside those exact collision groups.
+16. `EntitySimilarityFinder.find_similarity_candidates()` performs the broader matcher-based duplicate scan across persisted entities.
+17. `EntitySimilarityFinder.find_duplicate_candidates()` combines both stages into one duplicate-inspection report.
+18. `GraphRAG.dedupe_entities()` converts duplicate candidates into merge groups, chooses masters with `similarity/deduplication.py`, and delegates the destructive graph rewrite to `GraphDB.merge_entity_nodes()`.
 
 ## Notes For New Agents
 

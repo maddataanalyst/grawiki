@@ -1,9 +1,11 @@
 import autoroot
 from dotenv import load_dotenv
 
+from grawiki import rag
 from grawiki.db.falkordb import FalkorGraphDB
 from grawiki.rag.graph_rag import GraphRAG
 from pathlib import Path
+from tests import rag
 from grawiki.graph.models import Node
 
 
@@ -21,50 +23,70 @@ async def main():
         entity_resolution_threshold=0.9,
     )
 
-    sim_finder = rag._entity_similarity
-    duplicates = await sim_finder.find_duplicate_candidates(limit=10, threshold=0.9)
-    duplicate_candidate_1 = duplicates.similarity_candidates[0]
-    dupl_source_1 = duplicate_candidate_1.source
-    print("Duplicate candidate source node:")
-    dupl_dict = dict(dupl_source_1)
-    dupl_dict.pop("embedding", None)  # Remove embedding from printout for readability
-    print(dupl_dict)
+    from datetime import datetime
+    from grawiki.graph.models import MemoryNode, Relationship
+    from grawiki.core.commons import Chunk
 
-    merged_properties = dict(dupl_source_1.properties)
-    for hit in duplicate_candidate_1.hits:
-        for prop, value in hit.node.properties.items():
-            if prop not in merged_properties:
-                merged_properties[prop] = value
+    # This might be a result of the agent operation - e.g. previous query
+    nodes = await rag.search("Reflexion agents")
+    memory_node_ids = [hit.node.id for hit in nodes[:3]]
 
-    merged_labels = set([dupl_source_1.label])
-    for hit in duplicate_candidate_1.hits:
-        merged_labels.add(hit.node.label)
+    content = """User wanted a complete analysis of the reflexion agents, reflexion and orchestrator-worker patterns"""
 
-    new_node = Node(
-        name=dupl_source_1.name,
-        semantic_key=dupl_source_1.semantic_key,
-        id=dupl_source_1.id,
-        label=list(merged_labels)[0],
-        properties=merged_properties,
-        embedding=dupl_source_1.embedding,
+    memory = MemoryNode(
+        id="memory_1",
+        semantic_key="memory_1",
+        name="User memory1",
+        properties={"user_id": "user_1223"},
+        creation_date=datetime.now().isoformat(),
+        content=content,
     )
 
-    collected_relationships = []
-    relationship_update_queries = []
-    for hit in duplicate_candidate_1.hits:
-        hit_rels = database.query(
-            f"MATCH (n {{id: '{hit.node.id}'}})-[r]->(m) RETURN r.id"
-        ).result_set
-        for rel in hit_rels:
-            collected_relationships.append(rel[0])
-            rel_update_query = f"""MATCH (n_new: {new_node.label} {{id: '{new_node.id}'}})
-            MERGE (n_new)-[r {{id: '{rel[0]}'}}]->(m)"""
-            relationship_update_queries.append(rel_update_query)
+    # TODO: unneccessary step - turning Memory to Chunk.
+    # It seems that extract_kg_per_chunk is designed to work with Chunks,
+    # but we could also have an extract_kg_per_node that works directly with MemoryNodes.
+    # This would avoid the redundant step of converting a MemoryNode to a Chunk just for KG extraction.
+    chunk_memory = Chunk(
+        id=memory.id,
+        document_id=memory.id,
+        content=content,
+    )
 
-    print("Collected relationships to update:", collected_relationships)
-    print("Generated relationship update queries:")
-    for query in relationship_update_queries:
-        print(query)
+    concepts_from_memory = await rag.extract_kg_per_chunk([chunk_memory])
+
+    memory_rels = []
+    for idx, node_id in enumerate(memory_node_ids):
+        rel = Relationship(
+            id=f"rel_{idx}",
+            source=memory.id,
+            target=node_id,
+            label="MENTIONS",
+        )
+        memory_rels.append(rel)
+
+    existing_memory_entities = await rag._resolve_extracted_entities(
+        concepts_from_memory
+    )
+
+    raw_extracted_ids = [entity.id for entity in concepts_from_memory["memory_1"].nodes]
+    found_existing_nodes = []
+    new_nodes = []
+    for node in existing_memory_entities["memory_1"].nodes:
+        if node.id not in raw_extracted_ids:
+            found_existing_nodes.append((node.id, node.name))
+        else:
+            new_nodes.append((node.id, node.name))
+
+    print("Found existing nodes that match extracted concepts:")
+    for node_id, node_name in found_existing_nodes:
+        print(f"- {node_id}: {node_name}")
+
+    print("\nNewly extracted nodes that do not match existing entities:")
+    for node_id, node_name in new_nodes:
+        print(f"- {node_id}: {node_name}")
+
+    # database.upsert_relationships([memory_rels])
+    # database.upsert_nodes([memory])
 
 
 if __name__ == "__main__":

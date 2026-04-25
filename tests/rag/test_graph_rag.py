@@ -10,7 +10,7 @@ from grawiki.core.commons import Chunk
 import pytest
 
 from grawiki.db.base import GraphDB, NeighborRelationship, NodeHit
-from grawiki.graph.models import KnowledgeGraph, Node, Relationship
+from grawiki.graph.models import KnowledgeGraph, MemoryNode, Node, Relationship
 from grawiki.rag.graph_rag import GraphRAG
 from grawiki.retrieval.text import TextRetriever
 from grawiki.similarity.deduplication import MergeReport
@@ -48,9 +48,17 @@ class FakeGraphDB(GraphDB):
         self.setup_calls: list[dict[str, int] | None] = []
         self.saved_doc_nodes = []
         self.saved_chunk_nodes = []
-        self.saved_entities: list[tuple[list[Chunk], dict[str, KnowledgeGraph]]] = []
+        self.saved_entities: list[tuple[list[str], dict[str, KnowledgeGraph]]] = []
+        self.upserted_nodes: list[Node] = []
+        self.upserted_relationships: list[Relationship] = []
+        self.deleted_memory_ids: list[str] = []
         self.fulltext_calls: list[tuple[list[str], str, int]] = []
         self.vector_calls: list[tuple[list[str], list[float], int]] = []
+        self.recall_calls: list[tuple[list[str], int, int]] = []
+        self.fulltext_results: list[NodeHit] = []
+        self.vector_results: list[NodeHit] = []
+        self.neighbor_map: dict[str, list[NeighborRelationship]] = {}
+        self.recall_results: dict[str, list[NeighborRelationship]] = {}
         self.entities: list[Node] = []
         self.relationship_counts: dict[str, int] = {}
         self.merges: list[tuple[Node, tuple[str, ...]]] = []
@@ -64,10 +72,10 @@ class FakeGraphDB(GraphDB):
 
     async def save_entities_and_rels(
         self,
-        chunks: list[Chunk],
-        chunk_graphs: dict[str, KnowledgeGraph],
+        owner_ids: Sequence[str],
+        owner_graphs: dict[str, KnowledgeGraph],
     ) -> None:
-        self.saved_entities.append((chunks, chunk_graphs))
+        self.saved_entities.append((list(owner_ids), owner_graphs))
 
     async def ensure_indexes(
         self, *, labels: Iterable[str], vector_dims: Mapping[str, int] | None = None
@@ -75,22 +83,36 @@ class FakeGraphDB(GraphDB):
         pass
 
     async def upsert_nodes(self, nodes: Sequence[Node]) -> None:
-        pass
+        self.upserted_nodes.extend(node.model_copy(deep=True) for node in nodes)
 
     async def upsert_relationships(self, rels: Sequence[Relationship]) -> None:
-        pass
+        self.upserted_relationships.extend(rel.model_copy(deep=True) for rel in rels)
 
     async def fulltext_search(
         self, *, labels: Sequence[str], query_text: str, limit: int = 10
     ) -> list[NodeHit]:
         self.fulltext_calls.append((list(labels), query_text, limit))
-        return []
+        return [
+            NodeHit(
+                node=hit.node.model_copy(deep=True),
+                score=hit.score,
+                matched_on=hit.matched_on,
+            )
+            for hit in self.fulltext_results[:limit]
+        ]
 
     async def vector_search(
         self, *, labels: Sequence[str], query_embedding: list[float], limit: int = 10
     ) -> list[NodeHit]:
         self.vector_calls.append((list(labels), list(query_embedding), limit))
-        return []
+        return [
+            NodeHit(
+                node=hit.node.model_copy(deep=True),
+                score=hit.score,
+                matched_on=hit.matched_on,
+            )
+            for hit in self.vector_results[:limit]
+        ]
 
     async def neighbor_relationships(
         self,
@@ -98,7 +120,39 @@ class FakeGraphDB(GraphDB):
         node_ids: Sequence[str],
         limit_per_node: int = 5,
     ) -> dict[str, list[NeighborRelationship]]:
-        return {node_id: [] for node_id in node_ids}
+        return {
+            node_id: [
+                NeighborRelationship(
+                    source_id=relationship.source_id,
+                    source_name=relationship.source_name,
+                    relationship_label=relationship.relationship_label,
+                    target=relationship.target.model_copy(deep=True),
+                )
+                for relationship in self.neighbor_map.get(node_id, [])[:limit_per_node]
+            ]
+            for node_id in node_ids
+        }
+
+    async def recall_subgraph(
+        self,
+        *,
+        memory_ids: Sequence[str],
+        hops: int = 1,
+        limit_per_memory: int = 20,
+    ) -> dict[str, list[NeighborRelationship]]:
+        self.recall_calls.append((list(memory_ids), hops, limit_per_memory))
+        return {
+            memory_id: [
+                NeighborRelationship(
+                    source_id=relationship.source_id,
+                    source_name=relationship.source_name,
+                    relationship_label=relationship.relationship_label,
+                    target=relationship.target.model_copy(deep=True),
+                )
+                for relationship in self.recall_results.get(memory_id, [])
+            ]
+            for memory_id in memory_ids
+        }
 
     async def list_entities(self, *, include_embeddings: bool = False) -> list[Node]:
         if include_embeddings:
@@ -122,6 +176,9 @@ class FakeGraphDB(GraphDB):
         duplicate_ids: Sequence[str],
     ) -> None:
         self.merges.append((master.model_copy(deep=True), tuple(duplicate_ids)))
+
+    async def delete_memory(self, memory_id: str) -> None:
+        self.deleted_memory_ids.append(memory_id)
 
 
 class StaticRetriever:
@@ -152,18 +209,19 @@ class ConcurrencyTrackingExtractor:
         self.current = 0
         self.maximum = 0
 
-    async def extract(self, chunk: Chunk) -> KnowledgeGraph:
+    async def extract(self, text: str) -> KnowledgeGraph:
         self.current += 1
         self.maximum = max(self.maximum, self.current)
         await asyncio.sleep(0.01)
         self.current -= 1
+        key = str(len(text))
         return KnowledgeGraph(
             nodes=[
                 Node(
-                    id=f"node_{chunk.id}",
+                    id=f"node_{key}",
                     label="Concept",
-                    semantic_key=f"concept_{chunk.id}",
-                    name=f"Concept {chunk.id}",
+                    semantic_key=f"concept_{key}",
+                    name=f"Concept {key}",
                     embedding=[1.0, 0.0, 0.0],
                 )
             ]
@@ -205,7 +263,11 @@ def test_graph_rag_step_methods_and_ingest(tmp_path: Path) -> None:
     chunk_nodes = rag.build_chunk_nodes(chunks, chunk_embeddings)
     asyncio.run(rag.persist_document_and_chunks(document_node, chunk_nodes))
     chunk_graphs = asyncio.run(rag.extract_kg_per_chunk(chunks))
-    asyncio.run(rag.persist_entities_and_relationships(chunks, chunk_graphs))
+    asyncio.run(
+        rag.persist_entities_and_relationships(
+            [chunk.id for chunk in chunks], chunk_graphs
+        )
+    )
 
     assert document_node.embedding == document_embedding
     assert len(chunk_nodes) == len(chunks)
@@ -380,6 +442,279 @@ def test_graph_rag_search_raises_when_all_retrievers_fail() -> None:
         asyncio.run(rag.search("machine intelligence", limit=5))
 
 
+def test_graph_rag_search_can_return_memory_hits() -> None:
+    """GraphRAG.search should include memory hits when retrievers return them."""
+
+    graph_db = FakeGraphDB()
+    memory = MemoryNode(
+        id="memory_1",
+        semantic_key="memory_1",
+        name="Tooling preference",
+        content="Use uv for package management.",
+        metadata={"user_id": "user-1"},
+    )
+    graph_db.vector_results = [NodeHit(node=memory, score=0.85, matched_on="vector")]
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=ConcurrencyTrackingExtractor(),
+        retrievers=(
+            TextRetriever(
+                db=graph_db,
+                embedding=FakeEmbedder(),
+                search_method="vector",
+                search_labels=["__chunk__", "__memory__"],
+            ),
+        ),
+    )
+
+    hits = asyncio.run(rag.search("tooling", limit=5))
+
+    assert len(hits) == 1
+    assert hits[0].node.id == "memory_1"
+    assert graph_db.vector_calls[0][0] == ["__chunk__", "__memory__"]
+
+
+def test_graph_rag_remember_persists_memory_without_chunking() -> None:
+    """remember() should persist a memory node and owner-linked entity graph."""
+
+    graph_db = FakeGraphDB()
+    memory_graph = KnowledgeGraph(
+        nodes=[
+            Node(
+                id="entity_1",
+                label="Concept",
+                semantic_key="concept_uv",
+                name="uv",
+                embedding=[1.0, 0.0, 0.0],
+            )
+        ],
+        relationships=[],
+    )
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(memory_graph),
+        retrievers=(StaticRetriever([]),),
+    )
+    memory = MemoryNode(
+        id="memory_1",
+        semantic_key="memory_1",
+        name="Tooling preference",
+        content="Use uv for package management.",
+        metadata={"user_id": "user-1"},
+    )
+
+    asyncio.run(rag.remember(memory))
+
+    assert graph_db.deleted_memory_ids == []
+    assert len(graph_db.upserted_nodes) == 1
+    persisted_memory = graph_db.upserted_nodes[0]
+    assert isinstance(persisted_memory, MemoryNode)
+    assert persisted_memory.id == "memory_1"
+    assert persisted_memory.embedding
+    assert graph_db.saved_entities[-1][0] == ["memory_1"]
+    assert list(graph_db.saved_entities[-1][1]) == ["memory_1"]
+
+
+def test_graph_rag_remember_replaces_existing_memory_by_id() -> None:
+    """remember(memory_id=...) should replace the existing memory id."""
+
+    graph_db = FakeGraphDB()
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(KnowledgeGraph()),
+        retrievers=(StaticRetriever([]),),
+    )
+    memory = MemoryNode(
+        id="fresh-memory",
+        semantic_key="fresh-memory",
+        name="Updated memory",
+        content="Replaced content.",
+        metadata={"user_id": "user-1"},
+    )
+
+    asyncio.run(rag.remember(memory, memory_id="memory_123"))
+
+    assert graph_db.deleted_memory_ids == ["memory_123"]
+    assert graph_db.upserted_nodes[0].id == "memory_123"
+    assert graph_db.upserted_nodes[0].semantic_key == "memory_123"
+    assert graph_db.saved_entities[-1][0] == ["memory_123"]
+
+
+def test_graph_rag_remember_accepts_raw_text_and_generates_memory_defaults() -> None:
+    """remember() should accept raw text and synthesize the memory payload."""
+
+    graph_db = FakeGraphDB()
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(KnowledgeGraph()),
+        retrievers=(StaticRetriever([]),),
+    )
+
+    persisted_memory = asyncio.run(
+        rag.remember(
+            "User prefers uv for Python package management.",
+            metadata={"user_id": "user-1"},
+        )
+    )
+
+    assert isinstance(persisted_memory, MemoryNode)
+    assert persisted_memory.id
+    assert persisted_memory.semantic_key == persisted_memory.id
+    assert persisted_memory.name == "User prefers uv for Python package management."
+    assert persisted_memory.metadata == {"user_id": "user-1"}
+    assert graph_db.upserted_nodes[0].id == persisted_memory.id
+
+
+def test_graph_rag_remember_raw_text_reuses_update_id() -> None:
+    """Raw-text remember should use memory_id as the canonical persisted id."""
+
+    graph_db = FakeGraphDB()
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(KnowledgeGraph()),
+        retrievers=(StaticRetriever([]),),
+    )
+
+    persisted_memory = asyncio.run(
+        rag.remember(
+            "Updated memory text.",
+            memory_id="memory_123",
+            metadata={"user_id": "user-1"},
+        )
+    )
+
+    assert graph_db.deleted_memory_ids == ["memory_123"]
+    assert persisted_memory.id == "memory_123"
+    assert persisted_memory.semantic_key == "memory_123"
+    assert graph_db.upserted_nodes[0].id == "memory_123"
+
+
+def test_graph_rag_remember_persists_explicit_links_to_related_node_ids() -> None:
+    """remember() should add explicit memory links to any existing node ids."""
+
+    graph_db = FakeGraphDB()
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(KnowledgeGraph()),
+        retrievers=(StaticRetriever([]),),
+    )
+    memory = MemoryNode(
+        id="memory_1",
+        semantic_key="memory_1",
+        name="Agent memory",
+        content="Remember links.",
+        metadata={"user_id": "user-1"},
+    )
+
+    asyncio.run(
+        rag.remember(
+            memory,
+            related_node_ids=["entity_1", "chunk_1", "entity_1", "memory_1"],
+        )
+    )
+
+    assert [
+        (relationship.source, relationship.target, relationship.label)
+        for relationship in graph_db.upserted_relationships
+    ] == [
+        ("memory_1", "entity_1", "__related__"),
+        ("memory_1", "chunk_1", "__related__"),
+    ]
+
+
+def test_graph_rag_recall_filters_memories_and_adds_k_hop_context() -> None:
+    """recall() should search only memories, post-filter by user_id, and expand context."""
+
+    graph_db = FakeGraphDB()
+    memory_user_1 = MemoryNode(
+        id="memory_1",
+        semantic_key="memory_1",
+        name="Agent memory",
+        content="ReAct and worker agents.",
+        metadata={"user_id": "user-1"},
+    )
+    memory_user_2 = MemoryNode(
+        id="memory_2",
+        semantic_key="memory_2",
+        name="Other memory",
+        content="Different user memory.",
+        metadata={"user_id": "user-2"},
+    )
+    entity = Node(
+        id="entity_1",
+        label="Concept",
+        semantic_key="concept_react",
+        name="ReAct",
+    )
+    worker = Node(
+        id="entity_2",
+        label="Concept",
+        semantic_key="concept_worker",
+        name="Worker",
+    )
+    graph_db.vector_results = [
+        NodeHit(node=memory_user_1, score=0.9, matched_on="vector"),
+        NodeHit(node=memory_user_2, score=0.8, matched_on="vector"),
+    ]
+    graph_db.fulltext_results = [
+        NodeHit(node=memory_user_2, matched_on="fulltext"),
+    ]
+    graph_db.recall_results = {
+        "memory_1": [
+            NeighborRelationship(
+                source_id="memory_1",
+                source_name="Agent memory",
+                relationship_label="__mentions__",
+                target=entity,
+            ),
+            NeighborRelationship(
+                source_id="entity_1",
+                source_name="ReAct",
+                relationship_label="RELATED_TO",
+                target=worker,
+            ),
+        ],
+    }
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=ConcurrencyTrackingExtractor(),
+        retrievers=(StaticRetriever([]),),
+    )
+
+    hits = asyncio.run(
+        rag.recall("react", user_id="user-1", limit=5, hops=2, limit_per_hop=5)
+    )
+
+    assert graph_db.vector_calls[0][0] == ["__memory__"]
+    assert graph_db.fulltext_calls[0][0] == ["__memory__"]
+    assert graph_db.recall_calls == [(["memory_1"], 2, 5)]
+    assert [hit.node.id for hit in hits] == ["memory_1"]
+    assert hits[0].node.properties["recall_context"] == (
+        "Agent memory -[__mentions__]-> ReAct\nReAct -[RELATED_TO]-> Worker"
+    )
+
+
 def test_graph_rag_similarity_helpers_use_injected_similarity_finder() -> None:
     """GraphRAG should expose entity similarity helpers via the injected finder."""
 
@@ -431,7 +766,7 @@ class StaticExtractor:
     def __init__(self, graph: KnowledgeGraph) -> None:
         self._graph = graph
 
-    async def extract(self, chunk: Chunk) -> KnowledgeGraph:
+    async def extract(self, text: str) -> KnowledgeGraph:
         return self._graph
 
 

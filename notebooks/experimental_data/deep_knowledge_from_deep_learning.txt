@@ -1,0 +1,73 @@
+Introduction
+The rise of ChatGPT and other Large Language Models (LLMs) has raised many questions about how reliable the knowledge that such tools possess and use is. Language models of any type or family are tools that can generate texts that are the result of probabilistic reasoning over the corpus that they were trained on. On their own, if not reinforced with additional plugins that allow them to browse the Web or read external sources via context injection, they can hallucinate or perform counterfactual reasoning.
+
+Many researchers suggest, that enriching the LLMs training process and prompt context with knowledge graphs (KG) and reasoning over them might lead to the combination of the best properties of both types of systems ([1], [2]).
+
+This is the first post from the planned longer series, that will present the idea of knowledge graphs, KG reasoning (KGR), graph neural networks, and their application to indirect question answering.
+
+After reading this post, you will learn
+
+What is a heterogeneous graph, and how is it different from typical graph structures?
+What is a knowledge graph, and what are its main parts?
+What kind of software allows you to build knowledge graphs and later use them to train graph neural networks?
+How to construct a heterogeneous graph in Neo4j and PyTorch Geometric, using the data extracted from semantic source like DbPedia.
+What are some notable use cases for knowledge graphs?
+Heterogeneous graphs
+Let’s start with the basics. What is a heterogeneous graph (HG)? This mysterious name describes a graph in which we have various types of edges (that depict specific entities) and vertices, that depict relations.
+
+Formally, heterogeneous graphs are defined as follows ([4]):
+
+[IMAGE]
+
+While this equation looks complicated, what it really says, is that each node has a specific type assigned to it, and every edge represents some relation.
+
+One picture says more than a thousand words, so let’s take a look at the following picture. We have the following node types: “author”, “paper”, “institution”, and the following relation types: “wrote”, “published”, “cooperated”.
+
+I believe that this is much more intuitive than the formal expression above.
+
+Another variation of heterogeneous graphs (or their subtype) is the so-called “property graph” ([5]), in which each part of the HG can have associated properties and values, that describe them better. A person will (most probably) have their name, surname, birthplace, occupation, etc. A paper will be described by its title, keywords, etc. Even relationships can have their own properties of almost any type.
+
+A very good example of a rich heterogeneous that also functions as the property graph can be found in a Neo4j example dataset for beginners: a movie graph. Various actors (special “types of persons”) play some roles in movies that are directed by… well… directors (other “types of persons”) and meet their colleagues in such movie plans.
+
+As you can see, heterogeneous graphs can carry a lot of structural information — not only about connections between the entities but also about their properties and associated labels. This fact will become invaluable when it comes to modelling such domains using graph neural networks.
+
+Knowledge graphs
+Knowledge graphs (KG) are a special subtype of heterogeneous graphs. The main factor that differentiates them is not some technical aspect (like different type of properties or labels being used), but the purpose of creation. Knowledge graphs are intended to capture some structured knowledge about a particular (most probably expert) domain. In other words — they put a structure into the pieces of wisdom, that are available to subject-matter experts.
+
+Some definitions of KG capture this intuition:
+
+A knowledge graph (i) mainly describes real world entities and their interrelations, organized in a graph, (ii) defines possible classes and relations of entities in a schema, (iii) allows for potentially interrelating arbitrary entities with each other and (iv) covers various topical domains [6].
+
+Knowledge graphs could be envisaged as a network of all kind things which are relevant to a specific domain or to an organization. They are not limited to abstract concepts and relations but can also contain instances of things like documents and datasets [7].
+
+As you can see, the primary purpose of KGs is to capture and put into structure the knowledge that is relevant to a specific kind of problem. It is easy to imagine a KG being a special type of heterogeneous graph that serves this specific goal.
+
+
+
+The tools
+So how can you build your own knowledge graphs for inference and experimentation? There are several options, and we will discuss some of them in detail in upcoming articles.
+
+Graph databases — like Neo4j, are the most obvious choice and starting place to store large graph data. They are especially designed to quickly process queries over large graphs. Additionally, as described before, Neo4j allows you to create “property graphs” — so heterogeneous graphs with various properties and relation types. https://neo4j.com/
+PyTorch Geometric — a library that is fully integrated with PyTorch and allows you to build “typical” graph, heterogeneous graphs, and all sorts of graph neural networks. https://pytorch-geometric.readthedocs.io/
+DbPedia- it is a free project that extracts structured information from Wikimedia sources (like Wikipedia). The data is freely available to anyone as a so-called Open Knowledge Graph (OKG) ([8]). You can query DbPedia resources via an SQL-like language called SPARQL operating on the RDF (Resource Description Format) framework ([9]).
+Case Study
+Now it is time to show some practical examples of how to combine technologies described before, to construct a knowledge graph. You will see, how it can efficiently represent multidimensional data, allowing researchers and analysts to get useful insights.
+
+In this case study, we will show how knowledge graphs may effectively capture and analyse complicated connections. We will construct a heterogeneous graph that contains selected characteristics of political structures and organisation among members of multinational organisations such as NATO and the European Union. Can we identify any trends there? Are there any patterns or clusters, such as those, connected to the structure of a government or a nation’s constitution?
+
+In order to build a KG in Neo4j and PyTorch Geometric, we will extract specific information about countries, such as their forms of governments, legislatures, and political subjects (broader political science categories to which they belong). It will be accomplished by utilising DbPedia’s huge and organised data.
+
+The code for this case study (SPARQL and CYPHER queries, as well as Python code) can be found on my Github repository:
+
+Querying DbPedia
+First, let’s start with the query. DbPedia offers a rich semantic data representation on various topics, e.g., country politics. Below, you can find a sample record on the European Union (available at: https://dbpedia.org/page/European_Union):
+
+You can think of each record as a dictionary of key-value pairs, where keys are semantic qualifiers of DbPedia ontology namespaces while values are links to other records. Therefore, DbPedia data structures are graphs themselves!
+
+The goal of the query is to retrieve the following information:
+
+Country data, including the name and wikiPageID of each nation that belongs to the UN.
+Information about each nation’s membership in selected international organizations, namely: NATO, the European Union, and the Three Seas Initiative.
+Details about each nation’s type of government, including its label, wikiPageID, and related political topics.
+Information about these nations’ legislatures, such as their name and wikiPageID.
+Details on the houses that make up each nation’s legislature.

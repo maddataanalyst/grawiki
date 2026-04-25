@@ -192,6 +192,34 @@ class GraphDB(ABC):
         """
 
     @abstractmethod
+    async def recall_subgraph(
+        self,
+        *,
+        memory_ids: Sequence[str],
+        hops: int = 1,
+        limit_per_memory: int = 20,
+    ) -> dict[str, list[NeighborRelationship]]:
+        """Fetch a flattened k-hop recall subgraph for memory seeds.
+
+        Parameters
+        ----------
+        memory_ids : Sequence[str]
+            Memory node identifiers used as traversal seeds.
+        hops : int, optional
+            Maximum traversal depth in hops. Must be at least ``1``.
+        limit_per_memory : int, optional
+            Maximum number of distinct paths expanded per memory seed before
+            flattening them into relationship rows.
+
+        Returns
+        -------
+        dict[str, list[NeighborRelationship]]
+            Flattened relationship rows keyed by memory id. Traversal is
+            undirected for discovery, but each row preserves the stored
+            relationship direction.
+        """
+
+    @abstractmethod
     async def list_entities(self, *, include_embeddings: bool = False) -> list[Node]:
         """Return persisted entity nodes.
 
@@ -272,6 +300,16 @@ class GraphDB(ABC):
             Raised when ``duplicate_ids`` contains ``master.id``.
         """
 
+    @abstractmethod
+    async def delete_memory(self, memory_id: str) -> None:
+        """Delete one memory and prune now-orphaned directly mentioned entities.
+
+        Parameters
+        ----------
+        memory_id : str
+            Identifier of the memory node to remove.
+        """
+
     async def save_documents_and_chunks(
         self,
         documents: list[Document],
@@ -322,33 +360,34 @@ class GraphDB(ABC):
 
     async def save_entities_and_rels(
         self,
-        chunks: list[Chunk],
-        chunk_graphs: dict[str, KnowledgeGraph],
+        owner_ids: Sequence[str],
+        owner_graphs: dict[str, KnowledgeGraph],
     ) -> None:
-        """Persist extracted chunk entities and relationships.
+        """Persist extracted owner-linked entities and relationships.
 
         Parameters
         ----------
-        chunks : list[Chunk]
-            Chunks that own the extracted graphs.
-        chunk_graphs : dict[str, KnowledgeGraph]
-            Extracted graphs keyed by chunk identifier.
+        owner_ids : Sequence[str]
+            Node identifiers that own the extracted graphs, such as chunk or
+            memory ids.
+        owner_graphs : dict[str, KnowledgeGraph]
+            Extracted graphs keyed by owner identifier.
 
         Raises
         ------
         ValueError
             Raised when a graph references a chunk identifier that is not
-            present in ``chunks``.
+            present in ``owner_ids``.
         """
 
-        chunks_by_id = {chunk.id: chunk for chunk in chunks}
-        unknown_chunk_ids = sorted(set(chunk_graphs) - set(chunks_by_id))
-        if unknown_chunk_ids:
-            missing = ", ".join(unknown_chunk_ids)
-            raise ValueError(f"Unknown chunk ids in chunk_graphs: {missing}")
+        known_owner_ids = set(owner_ids)
+        unknown_owner_ids = sorted(set(owner_graphs) - known_owner_ids)
+        if unknown_owner_ids:
+            missing = ", ".join(unknown_owner_ids)
+            raise ValueError(f"Unknown owner ids in owner_graphs: {missing}")
 
         all_entity_nodes = [
-            node for graph in chunk_graphs.values() for node in graph.nodes
+            node for graph in owner_graphs.values() for node in graph.nodes
         ]
         await self.upsert_nodes(all_entity_nodes)
 
@@ -363,13 +402,13 @@ class GraphDB(ABC):
 
         mentions_rels: list[Relationship] = []
         entity_rels: list[Relationship] = []
-        for chunk_id, graph in chunk_graphs.items():
+        for owner_id, graph in owner_graphs.items():
             nodes_by_id = {node.id: node for node in graph.nodes}
             for node in graph.nodes:
                 mentions_rels.append(
                     Relationship(
                         id=str(uuid.uuid4()),
-                        source=chunk_id,
+                        source=owner_id,
                         target=canonical_ids_by_node_id[node.id],
                         label="__mentions__",
                     )
@@ -378,7 +417,7 @@ class GraphDB(ABC):
                 if rel.source not in nodes_by_id or rel.target not in nodes_by_id:
                     raise ValueError(
                         "Relationship references a node missing from the "
-                        f"chunk graph for chunk '{chunk_id}'."
+                        f"owner graph for owner '{owner_id}'."
                     )
                 entity_rels.append(
                     rel.model_copy(
@@ -419,7 +458,7 @@ class GraphDB(ABC):
             Search hits grouped by node family.
         """
 
-        labels = ["__document__", "__chunk__", "__entity__"]
+        labels = ["__document__", "__chunk__", "__memory__", "__entity__"]
         if method == "fulltext":
             hits = await self.fulltext_search(
                 labels=labels, query_text=query, limit=limit
@@ -449,9 +488,14 @@ def _group_hits_by_label(hits: list[NodeHit], *, limit: int) -> SearchResults:
         Hits grouped by label, capped at ``limit`` per group.
     """
 
-    from grawiki.graph.models import ChunkNode, DocumentNode
+    from grawiki.graph.models import ChunkNode, DocumentNode, MemoryNode
 
-    groups: SearchResults = {"__document__": [], "__chunk__": [], "__entity__": []}
+    groups: SearchResults = {
+        "__document__": [],
+        "__chunk__": [],
+        "__memory__": [],
+        "__entity__": [],
+    }
     for hit in hits:
         labels = hit.node.labels
         bucket = None
@@ -459,6 +503,8 @@ def _group_hits_by_label(hits: list[NodeHit], *, limit: int) -> SearchResults:
             bucket = groups["__document__"]
         elif ChunkNode.system_label in labels:
             bucket = groups["__chunk__"]
+        elif MemoryNode.system_label in labels:
+            bucket = groups["__memory__"]
         elif not any(label.startswith("__") for label in labels):
             bucket = groups["__entity__"]
         if bucket is None:
@@ -475,6 +521,10 @@ def _group_hits_by_label(hits: list[NodeHit], *, limit: int) -> SearchResults:
         elif isinstance(hit.node, ChunkNode):
             row["content"] = hit.node.content
             row["document_id"] = hit.node.document_id
+        elif isinstance(hit.node, MemoryNode):
+            row["content"] = hit.node.content
+            row["creation_date"] = hit.node.creation_date
+            row["metadata"] = dict(hit.node.metadata)
         else:
             row["labels"] = sorted(hit.node.labels)
             row["semantic_key"] = hit.node.semantic_key

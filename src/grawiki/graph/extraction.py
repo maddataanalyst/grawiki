@@ -14,7 +14,6 @@ from pydantic import Field
 from pydantic_ai import Agent
 from typing import Protocol
 
-from grawiki.core.commons import Chunk
 from grawiki.core.embedding import Embedding
 from grawiki.graph.prompts import KG_EXTRACTION_PROMPT
 from grawiki.graph.models import (
@@ -28,8 +27,8 @@ from grawiki.graph.models import (
 class KnowledgeGraphExtractorProtocol(Protocol):
     """Protocol for chunk-level knowledge graph extractors."""
 
-    async def extract(self, chunk: Chunk) -> KnowledgeGraph:
-        """Extract a graph for a single chunk."""
+    async def extract(self, text: str) -> KnowledgeGraph:
+        """Extract a graph for one text input."""
 
 
 class ExtractedNode(GraphModel):
@@ -211,13 +210,13 @@ class KnowledgeGraphExtractor:
             **kwargs,
         )
 
-    async def extract(self, chunk: Chunk) -> KnowledgeGraph:
-        """Extract a knowledge graph for one chunk.
+    async def extract(self, text: str) -> KnowledgeGraph:
+        """Extract a knowledge graph for one text input.
 
         Parameters
         ----------
-        chunk : Chunk
-            Source chunk to analyze.
+        text : str
+            Source text to analyze.
 
         Returns
         -------
@@ -225,7 +224,7 @@ class KnowledgeGraphExtractor:
             Extracted graph with embedded entity nodes.
         """
 
-        graph = await self.agent.run(chunk.content)
+        graph = await self.agent.run(text)
         output_graph = graph.output
 
         if self.fix_missing_nodes:
