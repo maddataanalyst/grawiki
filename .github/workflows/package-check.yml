@@ -40,12 +40,6 @@ jobs:
         run: |
           python -m venv .venv-falkordblite
           .venv-falkordblite/bin/python -m pip install --upgrade pip
-          WHEEL_URI="$(python - <<'PY'
-from pathlib import Path
-
-wheel = next(Path('dist').glob('*.whl')).resolve().as_uri()
-print(wheel)
-PY
-          )"
+          WHEEL_URI="$(python -c \"from pathlib import Path; print(next(Path('dist').glob('*.whl')).resolve().as_uri())\")"
           .venv-falkordblite/bin/python -m pip install "grawiki[falkordblite] @ ${WHEEL_URI}"
           .venv-falkordblite/bin/python -c "from grawiki.db import FalkorGraphDB; print(FalkorGraphDB.__name__)"
