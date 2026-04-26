@@ -105,11 +105,6 @@ only-include = [
     "README.md",
     "LICENSE",
 ]
-exclude = [
-    "/private",
-    "/.kilo",
-    "/AGENTS.md",
-]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/grawiki"]
