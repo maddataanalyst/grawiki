@@ -1,5 +1,9 @@
 # GraWiki
 
+<p align="center">
+  <img src="docs/assets/images/grawiki_text_logo.png" alt="GraWiki logo" width="480">
+</p>
+
 GraWiki is an early-stage open source Python project for graph-backed knowledge
 extraction, retrieval, and agent memory.
 
