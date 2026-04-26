@@ -1,8 +1,8 @@
 # Similarity and Deduplication
 
-GraWiki exposes entity deduplication as a user-facing workflow, not just as low-level helpers.
+GraWiki exposes entity deduplication as a user-facing workflow rather than only as low-level helpers.
 
-The normal progression is:
+The recommended progression is:
 
 1. Inspect exact semantic-key collisions with [`GraphRAG.find_entity_collision_candidates`][grawiki.rag.graph_rag.GraphRAG.find_entity_collision_candidates] or [`EntitySimilarityFinder`][grawiki.similarity.similarity_finder.EntitySimilarityFinder].
 2. Run the broader duplicate scan with [`GraphRAG.find_entity_duplicate_candidates`][grawiki.rag.graph_rag.GraphRAG.find_entity_duplicate_candidates].
@@ -24,5 +24,7 @@ Supporting APIs you will usually need:
 - [`MergeReport`][grawiki.similarity.deduplication.MergeReport]
 
 The same similarity stack also powers ingest-time entity resolution through [`GraphRAG`][grawiki.rag.graph_rag.GraphRAG] when `resolve_entities_on_ingest` is enabled.
+
+For a task-oriented walkthrough, see [How to deduplicate entities](../../how-to/deduplicate-entities.md).
 
 ::: grawiki.similarity

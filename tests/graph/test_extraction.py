@@ -28,21 +28,6 @@ class FakeEmbedder:
         )
 
 
-def test_extracted_node_does_not_require_machine_id() -> None:
-    """Extractor-facing nodes should not require a durable machine identifier."""
-
-    node = ExtractedNode(
-        label="Person",
-        name="Alan Turing",
-        semantic_key="person_alan-turing",
-    )
-
-    assert node.label == "Person"
-    assert node.name == "Alan Turing"
-    assert node.semantic_key == "person_alan-turing"
-    assert node.properties == {}
-
-
 def test_build_knowledge_graph_embeds_entities() -> None:
     """Entity nodes should receive concrete list embeddings, not coroutine objects."""
 

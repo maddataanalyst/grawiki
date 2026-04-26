@@ -761,6 +761,9 @@ dev = [
     { name = "ruff" },
 ]
 falkordb = [
+    { name = "falkordb" },
+]
+falkordblite = [
     { name = "falkordblite" },
 ]
 
@@ -798,7 +801,8 @@ dev = [
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "ruff", specifier = ">=0.15.11" },
 ]
-falkordb = [{ name = "falkordblite", specifier = ">=0.9.0" }]
+falkordb = [{ name = "falkordb", specifier = ">=1.6.0" }]
+falkordblite = [{ name = "falkordblite", specifier = ">=0.9.0" }]
 
 [[package]]
 name = "griffelib"

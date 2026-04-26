@@ -52,6 +52,9 @@ dev = [
     "ruff>=0.15.11",
 ]
 falkordb = [
+    "falkordb>=1.6.0",
+]
+falkordblite = [
     "falkordblite>=0.9.0",
 ]
 

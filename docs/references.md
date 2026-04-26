@@ -1,8 +1,6 @@
 # References
 
-The pages in this site cite a mix of foundational papers, recent research on
-knowledge-graph extraction and graph learning, and a small number of primary
-source practitioner notes that frame GraWiki's direction.
+The pages in this site cite foundational papers, recent research on knowledge-graph extraction and graph learning, and a small number of practitioner sources that help explain GraWiki's direction.
 
 ## Cited work
 
@@ -17,10 +15,7 @@ source practitioner notes that frame GraWiki's direction.
 
 ## Primary-source note
 
-The Karpathy tweet is cited as a primary-source practitioner statement using the
-URL supplied in the repository discussion. The docs quote the tweet text exactly
-from the user-provided transcript in this repository context because X does not
-expose a readable non-JavaScript page to the local build environment.
+The Karpathy tweet is cited as a primary-source practitioner statement using the URL supplied in the repository discussion. The documentation quotes the text from the repository transcript because X does not expose a readable non-JavaScript page to the local build environment.
 
 ## Bibliography
 

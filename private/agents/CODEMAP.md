@@ -239,12 +239,14 @@ This module keeps Cypher string construction separate from adapter control flow.
 
 #### `src/grawiki/db/falkordb.py`
 
-Concrete `GraphDB` implementation backed by FalkorDBLite.
+Concrete `GraphDB` implementation supporting dual-mode: FalkorDBLite (embedded, file-based) and full FalkorDB (server/Docker).
 
 Key responsibilities:
 
 - Defines `FalkorGraphDB`.
-- Opens/selects a FalkorDB graph stored on disk.
+- Connects to FalkorDBLite via `db_path` (file-based) or to a full FalkorDB server via `host`/`port`.
+- Uses lazy imports so only the required client package must be installed.
+- Opens/selects a FalkorDB graph within the chosen database.
 - Creates and tracks full-text and vector indexes, including per-label vector dimensions.
 - Persists nodes and relationships through `upsert_nodes(...)` and `upsert_relationships(...)`.
 - Stores entity label sets both as real Cypher labels and as an alphabetically sorted `labels` array property.
@@ -256,7 +258,7 @@ Key responsibilities:
 - Requires explicit `close()` during teardown in tests and scripts.
 - Provides lower-level query helpers for debugging and experimentation.
 
-This is currently the main persistence backend used by the repository.
+This is currently the main persistence backend used by the repository. For local development use FalkorDBLite (`uv sync --group falkordblite`). For production or shared environments use full FalkorDB via Docker (`uv sync --group falkordb`, then `docker compose -f private/docker-compose.yml up -d`).
 
 #### `src/grawiki/db/__init__.py`
 

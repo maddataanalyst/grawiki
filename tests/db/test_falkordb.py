@@ -22,8 +22,8 @@ def graph_db(tmp_path):
     """Create an isolated FalkorDBLite-backed graph for each test."""
 
     graph = FalkorGraphDB(
-        tmp_path / "graph.db",
         "test_graph",
+        db_path=tmp_path / "graph.db",
         vector_index_m=32,
         vector_index_ef_construction=200,
         vector_index_ef_runtime=10,
@@ -32,6 +32,14 @@ def graph_db(tmp_path):
         yield graph
     finally:
         graph.close()
+
+
+@pytest.fixture(autouse=True)
+def _setup_indexes(graph_db: FalkorGraphDB) -> FalkorGraphDB:
+    """Pre-create all indexes once after graph creation."""
+
+    asyncio.run(graph_db.setup())
+    return graph_db
 
 
 def _index_rows_by_key(rows: list[list[object]]) -> dict[tuple[str, str], list[object]]:

@@ -8,7 +8,7 @@ This page summarizes the public repository layout and the main package surfaces 
 
 ### `src/grawiki/`
 
-Main application package. This is where the reusable project code lives.
+Main application package. This directory contains the reusable project code.
 
 ### `tests/`
 
@@ -16,16 +16,15 @@ Pytest coverage for `GraphRAG`, the modular ingestion-step API, the retrieval la
 
 ### `docs/`
 
-Official public MkDocs documentation source. This includes both narrative pages and generated API reference pages under `docs/api/`, with `GraphRAG` as the main entry point.
+Official MkDocs documentation source. It includes narrative pages and generated API reference pages under `docs/api/`, with `GraphRAG` as the main entry point.
 
 ### `agent_tools/`
 
-Internal contributor and agent-facing guidance, plans, and repository maps. `agent_tools/CODEMAP.md` is the most complete orientation guide for contributors.
+Internal contributor and agent-facing guidance, plans, and repository maps. `agent_tools/CODEMAP.md` is the main orientation guide for contributors.
 
 ### `notebooks/`
 
-Maintained tutorial notebooks plus supporting debug scripts and sample data.
-The main walkthrough now starts in `01_ingest_and_deduplicate.ipynb`, then continues into agent memory (notebook 02 - `02_agent_memory_and_recall.ipynb`) and visualization (notebook 03 - `03_visualize_graph.ipynb`).
+Maintained tutorial notebooks plus supporting debug scripts and sample data. The main walkthrough starts in `01_ingest_and_deduplicate.ipynb`, then continues into agent memory in `02_agent_memory_and_recall.ipynb` and visualization in `03_visualize_graph.ipynb`.
 
 ## Important top-level files
 
@@ -104,3 +103,5 @@ High-level RAG facade.
 4. `grawiki.db` persists nodes, relationships, memories, and search indexes.
 5. `grawiki.retrieval` handles query-time embedding and graph-context retrieval.
 6. `grawiki.similarity` powers duplicate inspection, ingest-time entity resolution, and deduplication.
+
+For task-oriented examples built from the maintained notebooks, see [How to](how-to/index.md).

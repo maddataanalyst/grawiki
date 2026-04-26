@@ -2,22 +2,18 @@
 
 ![GraWiki](assets/images/grawiki_text_logo.png){ width="420" }
 
-GraWiki is an early-stage open source Python project that combines two ideas:
+GraWiki is an early-stage open source Python project with two main concerns:
 
 1. GraphRAG-style knowledge extraction and retrieval.
 2. LLM Wiki style memory for agents.
 
-The core premise is simple: use an LLM to extract structured knowledge from
-documents, persist that knowledge in a graph, and treat the same graph as part
-of an LLM system's long-lived memory.
+It uses an LLM to extract structured knowledge from documents, persists that knowledge in a graph, and uses the same graph as part of an LLM system's long-lived memory.
 
-GraWiki is not positioned as a finished framework. It is a work in progress and
-an experimental repository for building practical graph-backed memory and
-retrieval workflows.
+The project is still experimental. It is a working repository for graph-backed memory and retrieval workflows rather than a finished framework.
 
 ## What the project covers
 
-GraWiki is built around a small end-to-end surface:
+GraWiki focuses on a small end-to-end surface:
 
 - ingest source documents into a typed property graph,
 - retrieve graph-backed context from documents, chunks, memories, and entities,
@@ -36,13 +32,15 @@ GraWiki is built around a small end-to-end surface:
 
 ## Why this project exists
 
-Most RAG systems treat retrieved context as an ephemeral document slice. GraWiki
-pushes toward a more persistent knowledge organization model: documents can be
-transformed into graph structure, and agent interactions can leave behind memory
-nodes that can later be searched and expanded through connected context.
+Many RAG systems treat retrieved context as a temporary document slice. GraWiki instead stores document structure and agent memory in a persistent graph that can be searched later and expanded through connected context.
 
-That framing is closer to a lightweight, graph-backed "wiki" for an LLM system
-than to a narrow document-search pipeline alone [@edge2024fromlocal; @karpathy2026llmwiki].
+That design is closer to a lightweight graph-backed "wiki" for an LLM system than to a document-search pipeline alone [@edge2024fromlocal; @karpathy2026llmwiki].
+
+## How to use the docs
+
+- Start with [Flows](flows.md) for the main ingestion and retrieval paths.
+- Use [How to](how-to/index.md) for task-oriented guides derived from the maintained notebooks.
+- Use [API Overview](api/index.md) when you need the facade and lower-level references.
 
 ## Repository structure
 
@@ -64,22 +62,28 @@ At the package level:
 - `grawiki.similarity` covers duplicate inspection, similarity matchers, and deduplication helpers.
 - `grawiki.rag` exposes the `GraphRAG` facade.
 
-For a fuller map of the repository, see the dedicated project structure page.
+For a fuller map of the repository, see [Project Structure](structure.md).
 
-## Tutorial notebooks
+## Maintained notebooks
 
-The maintained notebook flow now lives in three numbered notebooks under `notebooks/`:
+The maintained notebook flow lives in three numbered notebooks under `notebooks/`:
 
 - `01_ingest_and_deduplicate.ipynb`
 - `02_agent_memory_and_recall.ipynb`
 - `03_visualize_graph.ipynb`
 
-Run notebook 1 first to build the local FalkorDB graph. Notebook 2 reuses that graph for agent memory demos, and notebook 3 visualizes it.
+Run notebook 1 first to build the local FalkorDB graph. Notebook 2 reuses that graph for agent memory examples, and notebook 3 visualizes the resulting graph.
 
-To install the tutorial dependencies, use:
+To install the tutorial dependencies, choose one:
 
-```bash
-uv sync --group falkordb --extra notebooks --extra viz
-```
+- For file-based (FalkorDBLite):
+  ```bash
+  uv sync --group falkordblite --extra notebooks --extra viz
+  ```
 
-The sample texts used there are Medium.com articles by Filip Wojcik from `https://medium.com/@filip.igor.wojcik`, and they are fully accessible without a subscription.
+- For Docker-based (full FalkorDB):
+  ```bash
+  uv sync --group falkordb --extra notebooks --extra viz
+  ```
+
+The sample texts used there are Medium articles by Filip Wojcik. They are available from his public Medium profile and are accessible without a subscription.

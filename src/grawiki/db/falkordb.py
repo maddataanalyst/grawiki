@@ -1,4 +1,4 @@
-"""FalkorDBLite-backed graph database adapter."""
+"""Dual-mode FalkorDB graph database adapter (Lite + Server)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from typing import cast
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from redis.exceptions import ResponseError
-from redislite.falkordb_client import FalkorDB
 
 from grawiki.db.base import GraphDB, NeighborRelationship, NodeHit, SearchResults
 from grawiki.db.cypher import (
@@ -57,14 +56,20 @@ _NODE_COLUMNS: tuple[str, ...] = (
 
 
 class FalkorGraphDB(GraphDB):
-    """Graph adapter implemented on top of FalkorDBLite.
+    """Graph adapter supporting both FalkorDBLite and full FalkorDB.
 
     Parameters
     ----------
-    db_path : str | Path
-        Filesystem path used by FalkorDBLite for persistence.
     graph_name : str
-        Logical graph name within the database file.
+        Logical graph name within the database.
+    db_path : str | Path | None, optional
+        Filesystem path for FalkorDBLite persistence. Use this **or**
+        ``host``/``port``, not both.
+    host : str | None, optional
+        Hostname of a running FalkorDB server. When provided the adapter
+        connects via TCP instead of using an embedded database.
+    port : int, optional
+        Port number for the FalkorDB server. Defaults to ``6379``.
     vector_similarity_function : Literal["cosine", "euclidean"], optional
         Similarity function used for vector indexes.
     vector_index_m : int, optional
@@ -77,36 +82,62 @@ class FalkorGraphDB(GraphDB):
 
     def __init__(
         self,
-        db_path: str | Path,
         graph_name: str,
         *,
+        db_path: str | Path | None = None,
+        host: str | None = None,
+        port: int = 6379,
         vector_similarity_function: Literal["cosine", "euclidean"] = "cosine",
         vector_index_m: int = 16,
         vector_index_ef_construction: int = 200,
         vector_index_ef_runtime: int = 10,
     ) -> None:
-        self.db_path = str(Path(db_path))
+        if db_path is not None and host is not None:
+            raise ValueError(
+                "Provide either db_path (FalkorDBLite) or host (FalkorDB), not both."
+            )
+        if db_path is None and host is None:
+            raise ValueError(
+                "Either db_path (FalkorDBLite) or host (FalkorDB) is required."
+            )
+
         self.graph_name = graph_name
         self.vector_similarity_function = vector_similarity_function
         self.vector_index_m = vector_index_m
         self.vector_index_ef_construction = vector_index_ef_construction
         self.vector_index_ef_runtime = vector_index_ef_runtime
-        self._db = FalkorDB(self.db_path)
+
+        if host is not None:
+            from falkordb import FalkorDB as FalkorDBClient
+
+            self._db = FalkorDBClient(host=host, port=port)
+            self.db_path = None
+        else:
+            from redislite.falkordb_client import (
+                FalkorDB as FalkorDBClient,
+            )
+
+            self.db_path = str(Path(db_path))
+            self._db = FalkorDBClient(self.db_path)
+
         self._graph = self._db.select_graph(graph_name)
         self._fulltext_indexes_ready = False
         self._vector_index_dimensions: dict[str, int] = {}
 
     def close(self) -> None:
-        """Close the embedded FalkorDB instance.
+        """Close the database connection.
 
         Notes
         -----
         FalkorDBLite runs an embedded Redis process underneath the adapter.
         Tests should call this explicitly during teardown instead of relying on
-        redislite's ``atexit`` cleanup hook.
+        redislite's ``atexit`` cleanup hook. Server-mode connections (via
+        ``host``/``port``) may not require explicit close, but calling this
+        method is safe in both modes.
         """
 
-        self._db.close()
+        if hasattr(self._db, "close"):
+            self._db.close()
 
     async def setup(self, embedding_dimensions: dict[str, int] | None = None) -> None:
         """Prepare FalkorDB indexes used by the application.

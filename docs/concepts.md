@@ -1,8 +1,6 @@
 # Concepts
 
-GraWiki sits at the intersection of several ideas that are often discussed
-separately: knowledge graphs, heterogeneous graphs, graph-based retrieval, and
-LLM-maintained memory.
+GraWiki combines several related ideas: knowledge graphs, heterogeneous graphs, graph-based retrieval, and LLM-maintained memory.
 
 ## What a knowledge graph is
 
@@ -14,9 +12,7 @@ relationships between them. In practice, that usually means:
 - both nodes and edges can carry properties,
 - the graph is meant to preserve semantics, not only connectivity.
 
-This matters because text alone hides structure inside sequences of tokens.
-Knowledge graphs make that structure explicit: what the entities are, how they
-relate, and which neighborhoods of facts belong together [@hogan2021knowledgegraphs].
+Text alone hides structure inside sequences of tokens. Knowledge graphs make that structure explicit by representing entities, relationships, and local neighborhoods of facts [@hogan2021knowledgegraphs].
 
 In GraWiki, that translates into a property-graph style representation where:
 
@@ -34,28 +30,19 @@ material, such a graph can be written as `G = (V, E, A, R, phi, psi)`, where
 `phi` maps vertices to node types and `psi` maps edges to relation types
 [@shi2022heterogeneous].
 
-That distinction is useful:
+The distinction is useful:
 
 - `knowledge graph` emphasizes meaning, entities, and semantic relations,
 - `heterogeneous graph` emphasizes typed structure suitable for machine learning,
 - in practice, the same underlying graph can be viewed through both lenses.
 
-GraWiki mainly builds a knowledge graph first, but it is helpful to think of the
-same structure as a heterogeneous graph when discussing embeddings, similarity,
-and downstream graph learning.
+GraWiki primarily builds a knowledge graph, but the same structure can also be treated as a heterogeneous graph when discussing embeddings, similarity, and downstream graph learning.
 
 ## Why graph structure matters
 
-Graph structure is valuable because many important relationships are not local to
-one sentence or one chunk. Documents often mention concepts repeatedly, connect
-them indirectly, and rely on context spread across paragraphs or across multiple
-sources. A graph representation can preserve those cross-document and
-cross-section links more naturally than flat chunk stores alone.
+Many relationships are not local to one sentence or one chunk. Documents repeat concepts, connect them indirectly, and distribute context across paragraphs or across multiple sources. A graph representation preserves those links more naturally than a flat chunk store.
 
-This is one of the reasons graph-enhanced retrieval has become attractive in RAG
-systems: graph structure supports neighborhood expansion, multi-hop context, and
-entity-centric retrieval patterns that are awkward to model with pure vector
-search [@jiang2024graphrag; @pan2024kgrag].
+This is one reason graph-enhanced retrieval has become useful in RAG systems. Graph structure supports neighborhood expansion, multi-hop context, and entity-centric retrieval patterns that are awkward to express with vector search alone [@jiang2024graphrag; @pan2024kgrag].
 
 At a practical level, that means a graph can help with:
 
@@ -66,10 +53,7 @@ At a practical level, that means a graph can help with:
 
 ## LLMs for knowledge graph extraction
 
-Turning text into a knowledge graph is not new, but LLMs changed the operating
-point. Traditional NLP pipelines can derive dependency graphs and other local
-syntactic structures, while LLMs are often better at extracting higher-level
-semantic entities and relations from longer passages of text.
+Turning text into a knowledge graph is not new, but LLMs changed the practical workflow. Traditional NLP pipelines can derive dependency graphs and other local syntactic structures, while LLMs are often better at extracting higher-level semantic entities and relations from longer passages.
 
 The general extraction pattern is:
 
@@ -83,41 +67,29 @@ Recent work has explored this pattern directly, including benchmark and survey
 work on LLM-based graph construction from text [@gillani2024kgextraction;
 @mihindukulasooriya2023text2kgbench; @zhu2024llmkg].
 
-GraWiki follows that family of approaches, but keeps the persistence layer and
-retrieval layer intentionally simple: extract typed entities and relations,
-persist them, then retrieve from the resulting graph later.
+GraWiki follows that family of approaches but keeps the persistence and retrieval layers simple: extract typed entities and relations, persist them, and retrieve from the resulting graph later.
 
 ## From knowledge graph to graph learning
 
-Your article materials also emphasize an important second step: once a graph has
-typed nodes and typed edges, it can be viewed as an input to graph learning
-methods rather than only as a database or retrieval structure.
+Once a graph has typed nodes and typed edges, it can also be treated as input to graph learning methods rather than only as a database or retrieval structure.
 
 Graph neural networks operate by propagating information across neighborhoods.
 In message-passing terms, nodes repeatedly collect messages from neighbors,
 aggregate them, and update their representations [@gilmer2017mpnn;
 @hamilton2020grl].
 
-That matters for knowledge graphs because it lets a system learn structure-aware
-embeddings based not only on raw text features, but also on topology, relation
-types, and local neighborhoods. This is especially relevant for tasks such as:
+This allows a system to learn structure-aware embeddings based on text features, topology, relation types, and local neighborhoods. That is especially relevant for tasks such as:
 
 - link prediction,
 - entity similarity,
 - node classification,
 - graph-level reasoning.
 
-GraWiki does not currently expose a full GNN training pipeline, but the project
-is aligned with that direction conceptually: extract semantic graph structure
-first, then make it available for retrieval, memory, and eventually richer graph
-reasoning workflows.
+GraWiki does not currently expose a full GNN training pipeline, but the project is compatible with that direction: extract semantic graph structure first, then make it available for retrieval, memory, and later graph reasoning workflows.
 
 ## LLM wiki style memory
 
-The other half of GraWiki is the memory side: a graph should not only represent
-facts extracted from documents, but also durable records of prior agent work.
-GraWiki stores memories as explicit graph nodes and can recall them together with
-linked graph context.
+The other half of GraWiki is persistent memory. The graph does not only represent facts extracted from documents; it also stores durable records of prior agent work. GraWiki persists memories as explicit graph nodes and can recall them together with linked graph context.
 
 This is adjacent to Andrej Karpathy's April 2026 `LLM Wiki` note and related
 tweet, which describe an LLM-maintained, persistent markdown knowledge base
@@ -133,21 +105,15 @@ The tweet version makes the same point in more operational language: raw sources
 are collected, compiled by an LLM into a markdown wiki, then queried and updated
 over time, with outputs filed back into the knowledge base [@karpathy2026llmwiki_tweet].
 
-GraWiki is not an Obsidian wiki tool, but it shares the same high-level concern:
-knowledge should accumulate and become reusable, instead of being rebuilt from
-scratch for every prompt.
+GraWiki is not an Obsidian wiki tool, but it shares the same concern: knowledge should accumulate and become reusable instead of being rebuilt from scratch for every prompt.
 
 ## Why combine these ideas
 
-Combining knowledge-graph extraction with persistent memory gives GraWiki a
-broader target than classic RAG:
+Combining knowledge-graph extraction with persistent memory gives GraWiki a wider scope than classic RAG:
 
 - document ingestion creates reusable graph structure,
 - agent interactions can add memory to the same graph,
 - retrieval can draw from both extracted knowledge and prior experience,
 - the graph becomes a shared substrate for context assembly.
 
-That combination reflects a wider trend in LLM systems work: external knowledge
-stores, explicit retrieval, structured representations, and engineered workflows
-matter as much as the base model for useful applications [@ng2024aie;
-@galkin2024foundationkg; @huang2025kgfm].
+This combination matches a broader direction in LLM systems work: external knowledge stores, explicit retrieval, structured representations, and engineered workflows matter as much as the base model in practical applications [@ng2024aie; @galkin2024foundationkg; @huang2025kgfm].

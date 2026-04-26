@@ -1,7 +1,7 @@
 """Tests for graph model semantics."""
 
 from grawiki.core.commons import Chunk, Document
-from grawiki.graph.models import ChunkNode, DocumentNode, MemoryNode
+from grawiki.graph.models import ChunkNode, DocumentNode
 
 
 def test_document_node_from_document_uses_title_as_name() -> None:
@@ -41,19 +41,3 @@ def test_chunk_node_from_chunk_uses_deterministic_name() -> None:
     assert node.document_id == "document_computing_machinery"
     assert node.metadata == {"order": "1"}
 
-
-def test_memory_node_still_uses_base_node_contract() -> None:
-    """Memory nodes should keep the shared id-label-name contract."""
-
-    node = MemoryNode(
-        id="memory_tooling_preference",
-        name="Tooling preference",
-        semantic_key="memory_tooling_preference",
-        content="Use uv for package management.",
-    )
-
-    assert node.id == "memory_tooling_preference"
-    assert node.labels == frozenset({MemoryNode.system_label})
-    assert node.name == "Tooling preference"
-    assert node.semantic_key == "memory_tooling_preference"
-    assert node.content == "Use uv for package management."

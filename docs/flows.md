@@ -5,10 +5,7 @@ The public API centers on the `GraphRAG` facade in
 
 ## Document ingestion
 
-`GraphRAG.ingest(path)` exposes the clearest end-to-end flow in the repository.
-It reads a file, creates chunk and document nodes, extracts a chunk-level
-knowledge graph, optionally resolves extracted entities against already
-persisted ones, and then writes the resulting graph state to the database.
+`GraphRAG.ingest(path)` is the main end-to-end ingestion flow. It reads a file, creates document and chunk nodes, extracts a chunk-level knowledge graph, optionally resolves extracted entities against persisted ones, and writes the resulting graph state to the database.
 
 ```mermaid
 flowchart TD
@@ -29,14 +26,11 @@ flowchart TD
     M --> N[(Graph state updated)]
 ```
 
-The explicit stepwise methods also exist as public methods, which makes the
-pipeline easier to inspect in notebooks and debugging sessions. The repository's
-numbered tutorial notebooks use these step methods directly rather than relying
-only on the one-shot `ingest(...)` wrapper.
+The same steps are also available as public methods. That makes the pipeline easier to inspect in notebooks and debugging sessions. The maintained notebook workflow, and the corresponding [How to](how-to/index.md) guides, use these methods directly instead of relying only on the one-shot `ingest(...)` wrapper.
 
 ## Memory and retrieval
 
-GraWiki also exposes a second family of flows around memory and search:
+GraWiki also exposes a second set of flows for memory and search:
 
 - `remember(...)` persists a `__memory__` node, embeds the memory text, extracts
   entities from the memory body, and persists those links back into the graph.
@@ -56,5 +50,4 @@ flowchart TD
     G --> H[Memory hits with attached graph context]
 ```
 
-Together, these flows let GraWiki act as both a graph-extraction pipeline and a
-memory-oriented retrieval layer.
+Together, these flows make GraWiki both a graph-extraction pipeline and a memory-oriented retrieval layer.

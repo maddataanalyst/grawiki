@@ -15,6 +15,12 @@ nav:
   - Overview: index.md
   - Concepts: concepts.md
   - Flows: flows.md
+  - How to:
+      - Overview: how-to/index.md
+      - Ingest a Document: how-to/ingest-a-document.md
+      - Deduplicate Entities: how-to/deduplicate-entities.md
+      - Store and Recall Memory: how-to/store-and-recall-memory.md
+      - Visualize a Graph: how-to/visualize-a-graph.md
   - Project Structure: structure.md
   - API:
       - API Overview: api/index.md
