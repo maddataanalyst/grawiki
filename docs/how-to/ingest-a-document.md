@@ -1,0 +1,66 @@
+# Ingest a document
+
+This guide shows the stepwise ingestion workflow exposed by [`GraphRAG`][grawiki.rag.graph_rag.GraphRAG]. Use it when you want to inspect intermediate artifacts such as chunks, embeddings, document nodes, or per-chunk extraction results.
+
+If you only need the full pipeline, use `await rag.ingest(path)` instead.
+
+## Prepare the database and facade
+
+```python
+from pathlib import Path
+
+from grawiki.db import FalkorGraphDB
+from grawiki.rag import GraphRAG
+
+database = FalkorGraphDB(
+    "my_graph",
+    db_path="/tmp/my_graph.db",
+)
+rag = GraphRAG(
+    model="openai:gpt-4.1-mini",
+    embedding_model="openai:text-embedding-3-small",
+    db=database,
+)
+
+await database.setup()
+source_path = Path("path/to/document.md")
+```
+
+## Run the ingestion steps explicitly
+
+```python
+document = rag.read_document(source_path)
+chunks = rag.chunk_document(document)
+document_embedding = await rag.embed_document(document)
+chunk_embeddings = await rag.embed_chunks(chunks)
+
+document_node = rag.build_document_node(document, document_embedding)
+chunk_nodes = rag.build_chunk_nodes(chunks, chunk_embeddings)
+await rag.persist_document_and_chunks(document_node, chunk_nodes)
+
+chunk_graphs = await rag.extract_kg_per_chunk(chunks)
+await rag.persist_entities_and_relationships(
+    [chunk.id for chunk in chunks],
+    chunk_graphs,
+)
+```
+
+## What each step does
+
+1. `read_document(...)` loads the source file into a `Document` model.
+2. `chunk_document(...)` splits the document into `Chunk` models.
+3. `embed_document(...)` and `embed_chunks(...)` create embeddings for later search and indexing.
+4. `build_document_node(...)` and `build_chunk_nodes(...)` convert the transient models into persisted graph-node shapes.
+5. `persist_document_and_chunks(...)` writes the document and chunk nodes before extraction.
+6. `extract_kg_per_chunk(...)` produces one extracted graph per chunk.
+7. `persist_entities_and_relationships(...)` writes the extracted entities and relationships back to the graph.
+
+## One-shot alternative
+
+When you do not need intermediate artifacts, use the facade method:
+
+```python
+await rag.ingest(source_path)
+```
+
+`GraphRAG.ingest(...)` runs the same sequence and calls `setup()` internally.

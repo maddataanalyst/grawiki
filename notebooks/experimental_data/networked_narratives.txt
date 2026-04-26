@@ -1,0 +1,470 @@
+Networked Narratives
+
+Introduction
+Large language models (LLMs) have dominated machine learning discourse in recent years, particularly following ChatGPT’s groundbreaking release. When discussed in the context of agent systems, LLMs are frequently associated with graph-based frameworks. Platforms such as LangGraph, LangChain, and n8n have formalized this approach by enabling users to construct operational graphs performed by LLM agents. However, this application of graphs represents a fundamentally different paradigm from the more sophisticated subfield of graph-based deep learning.
+
+Since approximately 2017, graph neural networks (GNNs) have undergone a remarkable transformation, characterized by significant architectural advances and the generalization of knowledge graphs for complex problem-solving. While these developments have not captured widespread public attention, they present a huge potential and may reshape structured reasoning in LLMs and machine learning more broadly.
+
+This article demonstrates how to bridge these two domains — beginning with pure textual representation, transforming it into a text-based heterogeneous graph, and ultimately deriving a GNN-compatible embedding representation.
+
+Upon completing this article, you will understand:
+
+How to leverage LLMs to reformulate text into semantic graph structures that capture entities (nodes) and their relationships (edges)
+How to convert textual data into deep-learning-compatible semantic graph representations using the PyTorch Geometric library
+How to train graph neural networks (GNNs) to recognise relationships and construct structure-aware node embeddings
+Note: Libraries in the LLM ecosystem evolve rapidly, with frequent updates released almost monthly. Consequently, some LangChain or LangGraph methods may become deprecated by the time you read this article. Our focus here is on presenting fundamental concepts rather than implementation details that are subject to change.
+
+You can find the accompanying code for this article on my GitHub repository.
+
+Texts as Knowledge Graphs
+The transformation of text into graph-like semantic structures represents a well-established process in natural language processing. Classic NLP tasks include decomposing text into term dependency graphs, explored at both sentence and document levels (Bonfante et al., 2018). Traditional libraries such as the Natural Language Toolkit (NLTK) (Bird et al., 2009) and SpaCy (Honnibal & Montani, 2017) provide a set of tools and techniques for this purpose. The following example demonstrates the decomposition of a simple sentence — “The cat sat on the mat” — using SpaCy’s displaCy module.
+
+Press enter or click to view image in full size
+
+In a modern text analysis involving large document volumes, researchers increasingly focus on high-level, non-obvious connections that may span multiple sentences and paragraphs. LLMs with extended context windows are particularly well-suited for such tasks. Multiple studies have demonstrated that, with appropriate prompting and structured output formatting, LLMs can effectively manage these complex analytical tasks (Gillani et al., 2024; Mihindukulasooriya et al., 2023; Zhu et al., 2024).
+
+The methodology follows this structured approach:
+
+Preparation Phase:
+Prompt and output structure: Instruct the LLM to identify nodes (representing objects in the text) and relationships/edges (representing connections between elements)
+Text preprocessing: Parse and segment input text appropriately based on document size and complexity
+2. Processing Phase:
+
+Send the text as part of the query to the LLM.
+Process the output by:
+— Standardizing entity and edge names;
+— Validating consistency across the knowledge graph;
+— Constructing the final knowledge graph structure.
+Numerous tutorials and articles have covered this topic. For a comprehensive breakdown of this process, see Robert McDermott’s “From Unstructured Text to Interactive Knowledge Graphs Using LLMs” on Medium. Knowledge graphs constructed using this methodology are often integrated into graph databases like Neo4j; Noah Mayerhofer provides detailed implementation guidance in “Constructing Knowledge Graphs From Unstructured Text Using LLMs”.
+
+While many tutorials conclude at this stage, enabling graph querying (e.g., using CYPHER in Neo4j) and pattern discovery, a crucial question remains: How can we harness the full power of graph neural networks to construct embeddings and predict relationships within these networks?
+
+In other words: how we can transition from text-based graph to full graph-based processing from this point?
+
+GNNs and Heterogeneous Graphs
+Before proceeding, we must establish several key concepts fundamental to our approach.
+
+Knowledge graphs represent a specialized case of heterogeneous graphs — data structures where each node and edge possesses an associated type and dedicated properties. Formally, we can define a heterogeneous graph as (Shi, 2022):
+
+
+where:
+
+V and E represent the sets of vertices and edges, respectively;
+A and R denote the sets of node types (e.g., person, company, concept) and relationship types (e.g., knows, uses, hires);
+ϕ: V → A is a function mapping vertices to their types;
+ψ: E → R is a function mapping edges to their types.
+Knowledge graphs and GNNs serve as complementary tools for processing graph-structured data, yet they exhibit fundamental differences. While GNNs are designed to learn representations of nodes and edges, knowledge graphs focus on explicitly representing relationships between entities.
+
+Each node and relation type may possess distinct attribute sets, which must be converted into numerical form for GNN compatibility.
+
+Graph neural networks encompass a vast research domain that extends beyond our current scope. However, we can characterize them as networks accepting two primary input types:
+
+Node/relation attribute matrices for each node or relation type
+Adjacency matrices (or lists) representing connectivity relationships between nodes
+GNNs based on the message-passing neural network (MPNN) architecture, as described by Gilmer et al. (2017), perform a series of K “message propagation” steps. For each vertex v in a graph, during the k-th step (Hamilton, 2020):
+
+Neighborhood Collection: The direct neighborhood 𝒩(v) (i.e., the set of nodes connected to v) is identified and collected.
+Message Construction: For each neighbor u ∈ 𝒩(v), a message is constructed, typically through a non-linear mapping (e.g., a dedicated linear layer or mathematical function). The generic form for the message from neighbor u can be expressed as:
+Press enter or click to view image in full size
+
+
+where:
+
+h_v, h_u denote the representations (or embeddings) of nodes v and u from the previous iteration k−1 (initially their numerical attributes)
+MSG represents a mapping function
+e_uv is a vector of edge (relation) attributes
+3. Message Aggregation: Messages from all neighbors are aggregated using a function AGG, which can range from simple mean pooling to sophisticated attention mechanisms (Veličković et al., 2017). Formally, the aggregated message for node v is:
+
+
+Aggregation of messages from neighbours, adapted from (Hamilton, 2020).
+4. Node Update: Finally, the aggregated neighborhood information and the previous representation of node v are combined to update its embedding via an UPDATE function:
+
+
+Node update, adapted from (Hamilton, 2020).
+The following diagram illustrates these operations in simplified form:
+
+Press enter or click to view image in full size
+An illustraion of subsequent node / messages and update processing functions.
+A simplified overview of MPNN architecture. Source: Image by the author.
+This process repeats for K iterations, with each step enabling every node to incorporate information from its local neighborhood — and recursively, from the neighborhoods of its neighbors. Consequently, structural information propagates throughout the entire GNN.
+
+Based on this mechanism, GNNs can perform various tasks, including (Hamilton, 2020):
+
+Node/link classification: Leveraging node attributes and neighborhood information for prediction;
+Edge prediction: Predicting the existence (or absence) of connections between nodes using “negative sampling” (i.e., introducing synthetic “fake” connections labeled as class 0) to distinguish true from false relationships;
+Graph classification: Aggregating node embeddings for graph-level classification.
+Typically, a GNN first computes node embeddings, then employs a prediction head (a linear layer or specialized sub-network) for downstream tasks such as classification. This approach applies equally to simple graphs and heterogeneous (knowledge) graphs.
+
+Handling Semantic Graphs with GNNs
+Considering the concepts outlined above, we can establish a step-by-step procedure for transitioning from raw text to a GNN operating on extracted semantic graphs:
+
+Text Preparation: Load target text and preprocess it for LLM processing;
+Graph Extraction: Utilize prompting or specialized tools to extract text-based semantic graph elements (nodes and edges) via LLM;
+Graph Construction & Validation: Validate extracted elements and construct the heterogeneous knowledge graph;
+Numerical Encoding: Convert all node and edge attributes into numerical representations (e.g., one-hot encoding, label encoding, or embeddings);
+Task Definition: Define specific tasks for the graph (e.g., link prediction, node classification);
+Hybrid Model Creation:
+GNN Component: Compute structure-aware node embeddings;
+Prediction Head: Perform the final task (e.g., binary classification for link existence, node classification, etc.).
+Case study: Processing Wikipedia Articles
+The Goal
+In this practical exercise, our goal is to analyze Wikipedia articles on machine learning techniques and construct a knowledge graph of concepts. We then generate embeddings for these concepts based on their structural properties — specifically, their pairwise connections and overall graph topology. Importantly, these embeddings are generated through GNN message passing, rather than traditional text analysis methods (e.g., using Hugging Face models or direct LLM embeddings).
+
+We will analyze the following two articles:
+
+Machine Learning — explores the historical development and general taxonomy of ML algorithms.
+Neural Network (machine learning) — describes neural networks as a specialized ML subfield.
+Note: Results are highly dependent on the specific LLM used and may not be fully reproducible due to the inherent stochasticity of these models. For this exercise, I employed gpt-4.1-mini with a temperature of 0, accessed via OpenRouter.
+
+The accompanying repository provides options to switch between:
+
+Precomputed results: Serialized LLM outputs that reproduce the exact results obtained;
+Live computation: Real-time requests to your chosen LLM (requires API keys).
+Text to Semantic Graph via the LLM
+The initial step involves fetching Wikipedia articles and merging them into a single extended document. I have limited each article to a maximum of 50,000 characters. This is efficiently accomplished using LangChain’s Wikipedia loader function.
+
+Next, we employ our chosen LLM to extract knowledge graph elements. Two primary approaches are available:
+
+Custom prompting and building structures from scratch
+Utilizing LangChain tools for streamlined processing
+Custom Prompting and Structured Output
+For a custom approach, we can write prompts and leverage structured outputs to enforce desired formatting. First, we define classes for structured output:
+
+Nodes: Characterized by type, name, and unique identifier
+Relationships: Connections between two nodes, characterized by type, unique name, and identifier
+The following code snippet demonstrates an exemplary implementation:
+
+class Node(BaseModel):
+    id: str = Field(description="Node ID, a unique identifier for the node.")
+    node_type: str = Field(description="Node type, a string representing the type of the node. E.g.: person, organization or place")
+
+class Edge(BaseModel):
+    source_node_id: str = Field(description="Source node ID, a unique identifier for the source node.")
+    target_node_id: str = Field(description="Target node ID, a unique identifier for the target node.")
+    edge_type: str = Field(description="Edge type, a string representing the type of the edge. E.g.: works_at, located_in or married_to")
+
+class Graph(BaseModel):
+    nodes: list[Node] = Field(description="List of nodes in the graph.")
+    edges: list[Edge] = Field(description="List of edges in the graph.")
+We can now enforce this structure during LLM text processing:
+
+llm_with_structured_output = llm.with_structured_output(Graph)
+prompt = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        """
+        You are a helpful assistant for extracting structured knowledge graphs from text. Your task is to read the provided text and convert it into a graph structure following the given schema.
+
+        For each input, identify and extract:
+        - Concepts, disciplines, and the relationships between them
+        - People, organizations, and places mentioned in the text
+        - Associations and interactions among these entities
+
+        For each relationship, use clear and general relation names that can be applied consistently across different contexts (e.g., 'works_at', 'is_subfield_of', 'contributed_to'). Ensure that every node referenced in an edge is also present in the nodes list.
+
+        Focus on capturing meaningful associations, especially those involving concepts, disciplines, and people. Be comprehensive but concise, and avoid duplicating nodes or relationships.
+
+        Return the result as a graph object according to the schema.
+        """
+    ),
+    ("user", "{text_input}"),
+])
+
+query = prompt.format(text_input=doc.page_content)
+manual_graph_from_text = llm_with_structured_output.invoke(query)
+When using sufficiently advanced LLMs (note that results may vary significantly with smaller models), we should obtain a structure similar to the following. The visualization was constructed using the NetworkX library by adding nodes and relationships with appropriate labels.
+
+# Example nodes
+Node(id='Machine learning', node_type='Concept'),
+Node(id='Artificial intelligence', node_type='Concept'),
+Node(id='Deep learning', node_type='Concept'),
+Node(id='Neural networks', node_type='Concept'),
+Node(id='Statistics', node_type='Concept')
+# Example edges
+Edge(source=Node(id='Machine learning', type='Concept'), target=Node(id='Artificial intelligence', type='Concept'), type='is_subfield_of'),
+Edge(source=Node(id='Deep learning', type='Concept'), target=Node(id='Machine learning', type='Concept'), type='is_subfield_of'),
+Edge(source=Node(id='Neural networks', type='Concept'), target=Node(id='Machine learning', type='Concept'), type='is_model_used_in'),
+Edge(source=Node(id='Statistics', type='Concept'), target=Node(id='Machine learning', type='Concept'), type='is_foundation_of'),
+Edge(source=Node(id='Mathematical optimisation', type='Concept'), target=Node(id='Machine learning', type='Concept'), type='is_foundation_of')]
+Press enter or click to view image in full size
+A graph of connections between nodes. Nodes and edges are properly labelled.
+A NetworkX visualization of nodes and edges. Source: Image by the author.
+LLMGraphTransformer from LangChain
+At the time of writing, LangChain includes an experimental component — LLMGraphTransformer — that performs similar functionality. Given textual input, it extracts nodes and relationships encapsulated within a GraphDocument. Conceptually, it replicates the process described above, albeit with more detailed and refined prompting.
+
+The following code snippet demonstrates its usage:
+
+transformer = LLMGraphTransformer(llm=llm)
+graph_doc = transformer.convert_to_graph_documents([doc])
+Once we have obtained the text-based output, we are prepared to transform it into a format suitable for GNNs.
+
+Formatting the Knowledge Graph for GNNs
+For the GNN component, we will utilize the PyTorch Geometric (PyG) library. To convert a text-based knowledge graph into a GNN-compatible format, we must:
+
+For nodes: Collect all nodes and convert them to numerical representations, accounting for their types and unique identifiers.
+For relationships:
+— Validate that each relationship’s source and target nodes exist in the node set.
+— Construct an adjacency list representation.
+For simplicity, this article employs one-hot encoding for each node identifier. In practice, alternative methods — such as ordinal encoding or learned embeddings — can also be utilized.
+
+Simplified Processing Implementation
+We can implement a straightforward method to accomplish these tasks. The following code snippet demonstrates a basic implementation:
+
+# Extract all nodes and edges from the graph document
+nodes = graph_doc[0].nodes
+edges = graph_doc[0].relationships
+
+# Create dictionaries to store nodes by type
+nodes_by_type = {}
+for node in nodes:
+    node_type = node.type.lower()  # Normalize node types to lowercase
+    if node_type not in nodes_by_type:
+        nodes_by_type[node_type] = []
+    nodes_by_type[node_type].append(node.id)
+
+# Create id mappings for each node type (str -> int)
+node_id_mappings = {}
+for node_type, node_ids in nodes_by_type.items():
+    node_id_mappings[node_type] = {node_id: idx for idx, node_id in enumerate(node_ids)}
+
+# Create edge_index tensors for each relation type
+edge_indices_by_type = {}
+for edge in edges:
+    source_type = edge.source.type.lower()
+    target_type = edge.target.type.lower()
+    edge_type = edge.type
+    edge_key = (source_type, edge_type, target_type)
+    
+    if edge_key not in edge_indices_by_type:
+        edge_indices_by_type[edge_key] = []
+    
+    # Get numeric IDs for source and target
+    source_id = node_id_mappings[source_type][edge.source.id]
+    target_id = node_id_mappings[target_type][edge.target.id]
+    edge_indices_by_type[edge_key].append([source_id, target_id])
+
+# Convert edge lists to tensors
+for edge_key in edge_indices_by_type:
+    edges_list = edge_indices_by_type[edge_key]
+    edge_indices_by_type[edge_key] = torch.tensor(edges_list, dtype=torch.long).t()
+
+# Create node features for each node type using one-hot encoding
+x_dict = {}
+for node_type, node_ids in nodes_by_type.items():
+    num_nodes = len(node_ids)
+    # Create one-hot encoded features for each node
+    # For each node type, we create a matrix where:
+    # - Rows represent individual nodes of this type
+    # - Each row is a one-hot vector where a single position is 1 and others are 0
+    # - This effectively gives each node a unique identity
+    one_hot = torch.eye(num_nodes)  # Identity matrix creates perfect one-hot vectors
+    # Store the one-hot encoded feature matrix for this node type
+    x_dict[node_type] = one_hot
+
+# Create the heterogeneous graph
+hetero_data_manual = pyg.data.HeteroData()
+
+# Add node features
+for node_type, features in x_dict.items():
+    hetero_data_manual[node_type].x = features
+
+# Add edge indices
+for (src_type, edge_type, dst_type), edge_index in edge_indices_by_type.items():
+    hetero_data_manual[src_type, edge_type, dst_type].edge_index = edge_index
+Specifically, we count unique nodes for each node type, assign consecutive indices, verify that no relationships reference non-existent nodes, and construct a HeteroData object from PyTorch Geometric. This object comprises:
+
+x: A dictionary of numerical attributes per node type
+edge_index: A dictionary containing adjacency lists for each relation type
+HeteroData(
+  concept={ x=[40, 40] },
+  person={ x=[10, 10] },
+  organization={ x=[8, 8] },
+  (concept, is_subfield_of, concept)={ edge_index=[2, 16] },
+  (concept, is_model_used_in, concept)={ edge_index=[2, 10] },
+  (concept, is_foundation_of, concept)={ edge_index=[2, 2] },
+  (concept, is_related_to, concept)={ edge_index=[2, 1] },
+  (concept, is_application_of, concept)={ edge_index=[2, 1] },
+  (person, coined_term_for, concept)={ edge_index=[2, 1] },
+  (person, contributed_to, concept)={ edge_index=[2, 6] },
+  (organization, developed_early_machine, concept)={ edge_index=[2, 1] },
+  (person, provided_definition_for, concept)={ edge_index=[2, 1] },
+  (person, influenced_definition_of, concept)={ edge_index=[2, 1] },
+  (concept, is_component_of, concept)={ edge_index=[2, 1] },
+  (concept, is_training_method_of, concept)={ edge_index=[2, 1] },
+  (organization, used_for_application, concept)={ edge_index=[2, 4] },
+  (organization, collaborated_with, organization)={ edge_index=[2, 3] },
+  (person, predicted_impact_on_jobs, concept)={ edge_index=[2, 1] },
+  (concept, is_limitation_of, concept)={ edge_index=[2, 3] },
+  (concept, is_model_assessment_method, concept)={ edge_index=[2, 3] },
+  (concept, is_concern_of, concept)={ edge_index=[2, 1] }
+)
+Utilization of the HeXtractor Package
+Manually implementing this process — especially for complex graphs — can be tedious and error-prone. Therefore, in collaboration with my colleague Marcin Malczewski, I developed an open-source package called HeXtractor (Heterogeneous Graph Extractor), which automates the steps outlined above. Additionally, HeXtractor can convert tabular data (Pandas DataFrames or multiple DataFrames) into heterogeneous graphs. Complete package documentation is available on the official docs site, and it has been published and peer-reviewed in the Journal of Open Source Software (Wójcik et al., 2025).
+
+hetero_data, node_id_mapping = convert_graph_document_to_hetero_data(
+    manual_graph_from_text
+)
+By default, HeXtractor does not employ one-hot encoding, so an additional manual step is required if this representation is desired. Once the graph is extracted, we can generate an interactive visualization of the HeteroData to better understand the final structure.
+
+# Create a color palette with enough distinct colors for all node types
+colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray', 'olive',
+          'cyan', 'magenta', 'yellow', 'teal', 'navy', 'coral', 'maroon', 'lime',
+          'indigo', 'violet', 'turquoise']
+
+simple_cfg = dict(
+    node_types_to_colors={node: colors[node_idx % len(colors)] for node_idx, node in enumerate(hetero_data.node_types)},
+    edge_type_to_colors={
+        e: "black"
+        for e in hetero_data.edge_types
+    },
+    node_type_label_attr_name={node: "x" for node in hetero_data.node_types},
+    node_type_label_attr_idx={node: 0 for node in hetero_data.node_types},
+    notebook_visualization=True
+)
+
+simple_viz_cfg = VisualizationConfig(**simple_cfg)
+simple_net_viz = viz.VisualizationBuilder.build_visualization(simple_viz_cfg, hetero_data, mapped_node_names)
+simple_net_viz.show(name="llm_graph.html")
+Press enter or click to view image in full size
+A visualization of semantic concepts as graph with labels indicating entities and relation types.
+Semantic graph visualization from HeXtractor. Source: Image by the author.
+GNN Training
+With all components in place, we can now focus on GNN training. Inspection of the generated graph revealed numerous Concept-is_subfield_of-Concept relationships. We will train a hybrid network designed to predict links between concepts.
+
+Graph Splitting
+First, we split the graph into training, validation, and testing subsets while incorporating “fake” connections (class 0, i.e., negative samples). We also convert the graph to an undirected format to improve message flow in heterogeneous networks. PyG offers a utility function that automatically adds reverse relations for each existing connection (e.g., generating “rev-rel” for each A-rel→B link).
+
+target_rel = ("Concept", "is_subfield_of", "Concept")
+hetero_g_undir = ToUndirected()(hetero_data)
+
+for node_type in hetero_data.node_types:
+    hetero_g_undir[node_type].x = torch.atleast_2d(
+        nn.functional.one_hot(hetero_g_undir[node_type].x.to(torch.int64)).squeeze()
+    ).to(torch.float32)
+
+train_g, val_g, test_g = RandomLinkSplit(
+    add_negative_train_samples=True,
+    neg_sampling_ratio=2.0,
+    num_val=3,
+    num_test=0,
+    disjoint_train_ratio=0.5,
+    edge_types=[target_rel],
+)(hetero_g_undir)
+2. Hybrid Network Construction
+The second step involves creating the hybrid network, beginning with the GNN convolution layer. We employ the GraphSAGE architecture with two convolutional layers and mean aggregation. Note that the specification (-1, -1) is used for input dimensions; in heterogeneous graphs, PyG uses lazy initialization to build the network structure. We outline a prototype generic architecture, and PyG’s to_hetero utility function dynamically discovers node types and relationships within the heterogeneous graph to initialize weights. More details on this mechanism are available in the official documentation.
+
+"""The definition of the hetero GNN convolution layer.
+1. We first create a "prototype" model with lazy initialization of input (-1, -1);
+2. Then we convert it to a heterogeneous model using the metadata of the graph - this is handled by the PyG library;
+"""
+pyg.seed_everything(123)
+sage = pyg_nn.GraphSAGE(
+    in_channels=(-1, -1), hidden_channels=16, out_channels=16, num_layers=2, aggr=["sum", "mean"], dropout=0.5, normalize=True, jk='cat'
+)
+
+gnn_conv_hetero = pyg_nn.to_hetero(
+    sage, hetero_g_undir.metadata(), aggr="mean"
+)
+Once the GNN component is constructed, we add a prediction head. This head takes the source and target node embeddings for a given relation, concatenates them, and performs binary link prediction (determining whether a connection exists).
+
+class LinkPredictor(nn.Module):
+    """
+    A link prediction model that predicts whether an edge exists between two nodes.
+    
+    This model first uses a GNN to generate node embeddings, then predicts links by
+    concatenating the embeddings of source and target nodes and passing them through
+    a prediction head.
+    """
+    
+    def __init__(
+        self,
+        gnn_conv,  # GNN model that generates node embeddings
+        dim_in: int = 8,  # Dimension of each node embedding
+        hidden_dim: int = 8,  # Hidden dimension of prediction MLP
+        relation: tuple[str, str, str] = target_rel,  # Target relation to predict (src_type, edge_type, dst_type)
+    ):
+        super().__init__()
+        self.gnn_conv = gnn_conv  # GNN model for node embedding generation
+        # MLP for predicting links: first maps concatenated embeddings to hidden dimension
+        self.prediction_head = nn.Linear(dim_in * 2, hidden_dim)
+        # Output layer maps hidden representation to a single score
+        self.out = nn.Linear(hidden_dim, 1)
+        # Store the target relation for reference
+        self.target_rel = relation
+        # Extract source and destination node types from the relation
+        self.src_node_type = relation[0]
+        self.dst_node_type = relation[2]
+
+    def forward(self, hetero_g: pyg.data.HeteroData):
+        """
+        Forward pass for link prediction.
+        
+        Args:
+            hetero_g: A heterogeneous graph with node features and edge_label_index
+                     containing node pairs to evaluate for link prediction.
+        
+        Returns:
+            Tensor of link prediction scores (logits)
+        """
+        # Generate embeddings for all nodes using the GNN
+        node_embed = self.gnn_conv(hetero_g.x_dict, hetero_g.edge_index_dict)
+        
+        # Get indices of source nodes for the edges we need to predict
+        src_idx = hetero_g[self.target_rel].edge_label_index[0, :]
+        # Extract embeddings for source nodes
+        src_embed = node_embed[self.src_node_type][src_idx]
+        
+        # Get indices of destination nodes
+        dst_idx = hetero_g[self.target_rel].edge_label_index[1, :]
+        # Extract embeddings for destination nodes
+        dst_embed = node_embed[self.dst_node_type][dst_idx]
+        
+        # Concatenate source and destination embeddings to represent the potential edge
+        x = torch.cat([src_embed, dst_embed], dim=1)
+        
+        # Pass through first layer of prediction MLP
+        x = self.prediction_head(x)
+        # Note: ReLU activation is commented out, but could be added for non-linearity
+        # x = F.relu(x)
+        
+        # Output layer produces final prediction score
+        x = self.out(x)
+        return x
+3. Model Training
+The final step involves training the model. Because our dataset is relatively small, mini-batching is unnecessary (moreover, this process is more complex for graphs than for traditional tabular data).
+
+The loss diagrams and classification reports for validation and test subsets are presented below. The results clearly demonstrate that the network has successfully learned to distinguish between genuine and negative connections.
+
+Press enter or click to view image in full size
+A decreasing curves of training/validation cost.
+Training and validation loss of the GNN model. Source: Image by the author.
+4. Embedding Extraction
+
+We can now use the GNN convolution component of our hybrid network to visualize node embeddings. A straightforward approach involves performing a forward pass through the GNN, which outputs a dictionary mapping node types to their embedding vectors. Since these vectors are multidimensional, we apply principal component analysis (PCA) to reduce their dimensionality for visualization purposes.
+
+Press enter or click to view image in full size
+A cloud of concepts — each point on a 2D plane represents a single concept phrase.
+Visualization of GNN embeddings for the”Concept” node type. Source: Image by the author.
+The visualization reveals several interesting patterns. For instance, there is a distinct cluster of “classic ML” techniques (including random forest, decision trees, and supervised learning) positioned on the right side of the plot. On the left-hand side, we observe a group encompassing “deep learning,” “neural networks,” and “mathematical optimization.” The most general concepts — such as “machine learning model,” “explainable AI,” and “reinforcement learning” — occupy the middle region, which is logical given that the training was based on the “is-subfield-of” relation.
+
+Having also extracted information about people, visualization of embeddings for each person is equally possible:
+
+Press enter or click to view image in full size
+A cloud of points related to people — each point on a 2D plane represents a single person-related phrase.
+Visualization of GNN embeddings for the “Person” node type. Source: Image by the author.
+Researchers associated with neural networks — including Geoffrey Hinton, John Hopfield, Donald Hebb, and Warren McCulloch — cluster together at the top-right corner. AI generalists and pioneers, such as Alan Turing and Tom Mitchell, are distributed across the plot, reflecting their broader influence across multiple ML domains.
+
+Conclusion
+In this exercise, we have demonstrated how the combination of LLMs, knowledge graph construction, and graph neural networks can be employed to train structure-aware GNN models capable of predicting complex relationships. While the example presented here represents a relatively straightforward implementation, the underlying principles can be scaled and applied to significantly more complex scenarios involving larger datasets, multiple document types, and diverse relationship patterns.
+
+Combining GNNs and LLMs creates promising opportunities for AI systems. Research shows that merging GNNs’ graph processing abilities with LLMs’ language understanding can help reduce hallucinations and improve reasoning in AI applications (Galkin et al., 2023; Huang et al., 2025; Zhao et al., 2024; Zhou et al., 2025).
+
+Key takeaways from this exercise include:
+
+Technical feasibility: The transformation pipeline from unstructured text to trainable GNN models is not only possible but increasingly accessible through modern tools and frameworks.
+Structural insights: GNN-generated embeddings capture meaningful semantic relationships that pure text-based approaches might miss
+Scalability potential: The methodology demonstrated here can be extended to larger corpora, multiple domains, and more sophisticated relationship types
+Future directions: The convergence of structural knowledge representation and neural learning approaches promises even more sophisticated reasoning capabilities
+As this field continues to evolve rapidly, we anticipate the development of increasingly sophisticated solutions that bridge the gap between structural reasoning and language processing. Thank you for taking the time to engage with this research. I hope this exploration provides valuable insights for your own work in graph neural networks and structured reasoning.
+
+Filip Wójcik

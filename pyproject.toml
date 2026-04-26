@@ -1,0 +1,110 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "grawiki"
+version = "0.1.0"
+description = "Graph-backed knowledge extraction and agent memory for LLM systems"
+authors = [{ name = "Filip Wojcik" }]
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["graphrag", "knowledge-graph", "llm", "memory", "rag", "falkordb"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "chonkie>=1.6.2",
+    "joblib>=1.5.3",
+    "pandas>=3.0.2",
+    "pydantic>=2.11.7",
+    "pydantic-ai-slim[openai,openrouter]>=1.84.1",
+    "rapidfuzz>=3.14.5",
+    "unstructured>=0.22.21",
+]
+
+[project.urls]
+Homepage = "https://grawiki.readthedocs.io/"
+Repository = "https://github.com/maddataanalyst/grawiki"
+Documentation = "https://grawiki.readthedocs.io/"
+Issues = "https://github.com/maddataanalyst/grawiki/issues"
+
+[project.optional-dependencies]
+docs = [
+    "mkdocs>=1.6.1",
+    "mkdocs-autorefs>=1.4.2",
+    "mkdocs-bibtex>=4.4.0",
+    "mkdocs-copy-to-llm>=0.2.0",
+    "mkdocs-material>=9.6.20",
+    "mkdocs-mermaid2-plugin>=1.1.1",
+    "mkdocstrings[python]>=0.30.1",
+    "pymdown-extensions>=10.15",
+]
+notebooks = [
+    "autoroot>=1.0.1",
+    "ipykernel>=7.2.0",
+    "ipywidgets>=8.1.7",
+    "python-dotenv>=1.1.1",
+    "rich>=14.2.0",
+    "tqdm>=4.67.1",
+]
+viz = [
+    "matplotlib>=3.10.7",
+    "networkx>=3.5",
+]
+falkordb = [
+    "falkordb>=1.6.0",
+]
+falkordblite = [
+    "falkordblite>=0.9.0",
+]
+all = [
+    "autoroot>=1.0.1",
+    "falkordb>=1.6.0",
+    "falkordblite>=0.9.0",
+    "ipykernel>=7.2.0",
+    "ipywidgets>=8.1.7",
+    "matplotlib>=3.10.7",
+    "mkdocs>=1.6.1",
+    "mkdocs-autorefs>=1.4.2",
+    "mkdocs-bibtex>=4.4.0",
+    "mkdocs-copy-to-llm>=0.2.0",
+    "mkdocs-material>=9.6.20",
+    "mkdocs-mermaid2-plugin>=1.1.1",
+    "mkdocstrings[python]>=0.30.1",
+    "networkx>=3.5",
+    "pymdown-extensions>=10.15",
+    "python-dotenv>=1.1.1",
+    "rich>=14.2.0",
+    "tqdm>=4.67.1",
+]
+
+[tool.ruff]
+target-version = "py313"
+
+[dependency-groups]
+dev = [
+    "autoroot>=1.0.1",
+    "pre-commit>=4.5.1",
+    "pytest>=9.0.3",
+    "ruff>=0.15.11",
+]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "src/grawiki",
+    "README.md",
+    "LICENSE",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/grawiki"]

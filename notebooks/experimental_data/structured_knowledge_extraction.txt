@@ -1,0 +1,410 @@
+Structured Knowledge Extraction: from DbPedia Queries to Llama Index Knowledge Graphs
+
+Intro
+The years 2022 and 2023 in the area of AI were dominated by discussions about large language models (LLMs) and their applications. It is probable that no one anticipated the heightened level of interest in this particular field before the introduction of ChatGPT by Open AI. Users and companies quickly realized that hallucinations and reliability issues severely limited the real-world applications of LLMs. Soon, various plugins, extensions, and solutions began to appear to address this issue.
+
+Before the emergence of ChatGPT, knowledge graphs and graph neural networks were supposed to be very popular and highly discussed topics. One of the main goals during the development of heterogeneous graph neural networks was to build a structured knowledge base for sequential reasoning and prediction.
+
+LLama-index is one of the tools and can combine two worlds: the creativity of LLMs and systematic knowledge organization. Analysts can use their data to answer questions without hallucinations (hopefully). One of the exciting features of LLama-index is its ability to construct knowledge graphs.
+
+In this post, I am going to present the following topics:
+
+A brief reminder of what knowledge graphs are and why they are useful.
+What are the classic methods of knowledge extraction from structured data sources? A DbPedia and SPARQL example.
+What are some classic, language-based methods to extract knowledge from text? An example of grammar-based extraction.
+How the same goal can be achieved using LLMs (conceptually)
+How to implement that using LLama-index.
+What to do next — what are possible extensions to this approach?
+The code for this tutorial can be found on my GitHub repository.
+
+Knowledge graphs reminder
+I have extensively discussed the concept of knowledge graphs in one of my blog posts. But, in simple terms, knowledge graphs (KG) are special types of heterogeneous graphs where each node (vertex) and each link (edge) has an associated type. Formally, we can describe this as follows (Sun, Y., & Han, J. (2013)):
+
+
+Simplified equation defining heterogeneous graphs. Source: Sun, Y., & Han, J. (2013)
+Knowledge graphs are typically used to describe the relationships between various entities or to capture a simplified description of some part of a real-world process. The example below shows a “scientific” domain: authors, papers, journals, and topics interacting together.
+
+
+Trivial heterogenous graph example. Source: own work.
+Knowledge graphs like the one above can then be processed using either:
+
+Classic graph algorithms — clustering, embedding, centrality measures, graph kernels, etc.
+Graph neural networks — which use a message-passing framework to learn structural patterns to recognise nodes, their connections, or even whole graphs. This is a huge and fascinating topic. If you would like to learn more about this, I highly recommend the sources mentioned below (Arora, S. (2020); Shi, J., Li, M., & Zhao, J. (2023)).
+When extracting data for knowledge graphs, one of the typical approaches is to use triplets of subject-relation-object. Using the example above, we will get the following triplets:
+
+(Author 1)    - [cooperates with] →(Author 2)
+(Author 1)    - [wrote]           →(Paper 1)
+(Author 2)    - [wrote]           →(Paper 1)
+(Publisher 1) - [issued]          →(Paper 1) 
+Triplets (converted to numerical format using, e.g., unique IDs or their unique features) can be transformed by methods like Translational Embedding (TransE), RotatE or similar. These methods project subject and object onto some numerical space and treat the relation as a translation vector. The figure below demonstrates an example of such a process (Bordes, A., et al. (2013)):
+
+
+Simple visualization of TransE mapping. Subject is moved in the space using relation (translation vector).
+Formally — TransE uses relation as a translation vector added to head. After this operation, head of relation should be close to tail.
+
+
+Simplified TransE formalisation. Adapted from (Bordes, A., et al. (2013)).
+This is a complex topic on its own; if you would like to know more, I encourage you to read the following, detailed article.
+
+The classic method of knowledge extraction
+One of the classic methods used for knowledge extraction and building knowledge graphs is to use structured data sources that are especially designed for that purpose. One of the notable examples is DbPedia, a large-scale knowledge base and data integration platform that leverages the vast amount of structured and unstructured data available on the Web. It is designed to provide a common framework for the integration and dissemination of heterogeneous data sources, enabling users to access and analyze a wide range of information from a single, unified perspective.
+
+One of the ways to extract the data from it is to use a specialised query language, SPARQL (btw, the name is a recursive acronym, such that it refers to itself as “ SPARQL Protocol and RDF Query Language “). It is a standardized language for querying and manipulating RDF (Resource Description Framework) data.
+
+RDF is a graph-based data model that represents information as a set of triples, making it ideal for storing and organising complex, interconnected data. SPARQL can sometimes be tricky and unintuitive, especially for people familiar mostly with classic SQL. If you would like to learn more about how to construct simple and more advanced queries in this language, I can recommend the following two brilliant tutorials by Angus Addlesee: Constructing SPARQL Queries and Constructing more advanced SPARQL queries.
+
+Meanwhile, let’s take a look at the example case.
+
+Structured data extraction from DbPedia
+Imagine that we would like to extract information from DbPedia about European Union countries, their form of government, legislature, and political motifs or subjects that are characteristic of a particular state system.
+
+We can achieve that by utilizing SPARQL queries against DbPedia, followed by a SPARQL wrapper in Python and the RDF Lib library for building an in-memory graph representation.
+
+Let’s start with the query: it will extract each country that is an EU member and all the required additional elements mentioned above. We will use the “CONSTRUCT” clause in the query, so the result will not be a typical table but a new RDF graph.
+
+CONSTRUCT{
+ ?country  rdfs:label         "Member states of the European Union".
+ ?country  dbp:currencyCode   ?currency.
+ ?country  dbo:governmentType ?govtype.
+ ?country  dbo:legislature    ?leg.
+ ?govtype  dcterms:subject    ?subject.
+}
+WHERE {
+   ?entity rdfs:label "Member states of the European Union"@en.
+   
+   ?country dcterms:subject         ?entity;
+                 dbo:governmentType ?govtype;
+                 dbp:currencyCode   ?currency;
+                 dbo:legislature    ?leg.
+   ?govtype dcterms:subject ?subject.
+}
+# Prepare SPARQL wrapper
+sparql = SPARQLWrapper("http://dbpedia.org/sparql")
+sparql.addDefaultGraph("http://dbpedia.org")
+
+# Read the query
+query = open("dbpedia_query_construct.rq", "r").read()
+sparql.setQuery(query)
+
+# Get results as RDF
+sparql.setReturnFormat(RDF)
+results = sparql.query()
+
+# Extract subject-rel-object triplets
+triplets = results.convert()
+Once executed, we can feed the result to RDF Lib to construct a graph.
+
+g = Graph()
+g += triplets
+RDFLib has many convenient methods for navigating a knowledge graph and querying it. We might, for example, get all subject-object pairs for a given predicate.
+
+subject_objects = list(g.subject_objects(predicate=URIRef('http://dbpedia.org/property/currencyCode')))
+subject_objects
+
+>> [
+(
+  rdflib.term.URIRef('http://dbpedia.org/resource/Latvia'),
+  rdflib.term.Literal('EUR', lang='en')
+),
+(
+  rdflib.term.URIRef('http://dbpedia.org/resource/Slovenia'),
+  rdflib.term.Literal('EUR', lang='en')
+),
+ (
+  rdflib.term.URIRef('http://dbpedia.org/resource/Spain'),
+  rdflib.term.Literal('EUR', lang='en')
+)]
+Pay attention to the fact that each element is uniquely identified using a URI. Such an approach guarantees referential consistency and ambiguity.
+
+We can even generate various visualizations of the knowledge graph to inspect its structure. The picture can be difficult to read, because of the long URL names.
+
+Press enter or click to view image in full size
+
+Part of the interactive visualization of the graph. Done using PyVis
+Knowledge extraction from text: subject-verb-object (SVO) approach
+The possibility to extract and query RDF-structured data is a perfect situation. But what do we do if we don’t have such data and all we are left with is a simple text message? Suppose that we would like to extract meaningful triplets from a scholarly article or a press release for further inference and analysis.
+
+One of the possibilities includes the utilisation of subject-verb-object extraction (SVO), supported by additional post-processing of the obtained information. (Temizer, M., & Diri, B. (2012); Cheong, H., et al. (2017)).
+
+In a nutshell, such an approach is based on the following text-processing pipeline:
+
+1. Text preprocessing;
+
+2. Morphological analysis and part-of-speech tagging;
+
+3. Analysis of text dependencies;
+
+4. Triplet extraction.
+
+Traditional NLP libraries, like NLTK or SpaCy+textacy can do this for us, and the result is highly dependent on the text type and underlying pipeline used.
+
+Structured data extraction from text — SVO example
+For this exercise, we will use Medium.com article “Trump vs. Biden: The biggest differences in their presidencies” by Edy Zoo. This text compares the approaches of Donald Trump and Joe Biden to various political problems and their approach to public debate.
+
+We will execute the following operations:
+
+1. Read the text and turn it into the SpaCy document.
+
+2. Use textacy to extract triplets subject-verb-object from the text.
+
+3. Keep only those entities that are related to people and do not contain stop words.
+
+4. Perform some post-processing to merge similar entities using TheFuzz library. We will merge texts that seem to be related to the same entities (e.g., Donald Trump and Trump are the same).
+
+5. Encode triplets containeing people in numerical format — assigning integer IDs to each one.
+
+6. Train a simple knowledge graph model — namely RotatE, that will embed subject and relation using relations as a transformation matrix.
+
+7. Answer predictive queries by presenting the model only a part of a triplet (e.g., subject + relation), allowing it to select the best matching completion.
+
+The code below demonstrates subsequent steps:
+
+# Step 1: Read raw text
+article = open(Path(os.pardir, 'data', 'trump_vs_biden.txt'), "r").read()
+
+# Step 2: Turn into SpaCy doc
+nlp = lang_utils.get_nlp()
+doc = nlp(article)
+
+# Step 3: Extract Person entities
+entities = lang_utils.extract_person_entities(doc)
+
+# Step 4: Merge similar entities
+person_entities = lang_utils.merge_similar_entities(entities)
+
+# Step 5: Extract entities related to people
+person_triplets = lang_utils.extract_triplets_for_entities(doc, person_entities, nlp)
+
+person_triplets[:5]
+
+>> [
+ ('Biden', 'have had', 'very different approaches'),
+ ('Donald Trump', 'taking', 'a more conservative and divisive stance'),
+ ('Biden', 'emphasizing', 'the importance'),
+ ('Biden', 'has been marked', 'a return'),
+ ('Biden', 'have faced', 'challenges')
+]
+
+# Step 6: Train RotatE embedding model on triplets
+
+# Assign ids and build tensors
+triplet_mapping = graph_utils.triplets2idx(person_triplets)
+subject_ids, rel_ids, object_ids = graph_utils.build_triplets_tensors(triplet_mapping)
+
+# Prepare the model
+model = tgnn.RotatE(len(triplet_mapping.elem2idx), num_relations=len(triplet_mapping.rel2idx), hidden_channels=8, margin=3)
+
+#####
+# Train it using the standard Torch loop.
+# This set could be automated using eg. Pytorch Lightning.
+
+optim = th.optim.Adam(model.parameters(), 0.01)
+loader = model.loader(
+    head_index=subject_ids,
+    rel_type=rel_ids,
+    tail_index=object_ids,
+    batch_size=8,
+    shuffle=True
+)
+losses = []
+epochs = 150
+
+for ep in tqdm(range(epochs)):
+    model.train()
+    total_loss = total_examples = 0
+    # Iterate in batches over the training dataset: sunbject-rel-object
+    for head_index, rel_type, tail_index in loader:
+        optim.zero_grad()
+        loss = model.loss(head_index, rel_type, tail_index)
+        loss.backward()
+        optim.step()
+        total_loss += float(loss) * head_index.numel()
+        total_examples += head_index.numel()
+    avg_loss = total_loss / total_examples
+    losses.append(avg_loss)
+The interesting fact here is that we have to do a lot of manual work to extract entities, find similarities between them, etc. etc — all of this you can find in the auxiliary functions provided in the repository. Still, both SpaCy and textacy use text analysis and grammatical deconstruction to find elements that we are interested in. Therefore, multiple errors are possible, and we are likely to skip some of the more nuanced and complex relationships presented in the text.
+
+The graph constructed using this method looks like the one in the figure below.
+
+Press enter or click to view image in full size
+
+The concept graph constructed with SVO extraction.
+RotatE can “answer” predictive queries by finding the best element that completes a given triplet — namely, the one with the highest score. Normally, when knowledge graph completion models are trained, the Hits@K metric is used — it checks how many correct completions are scored by the model at top K, compared to false/other possible elements.
+
+[Donald Trump, is, ?] -> [Donald Trump, is, president]
+Query results and missing element scoring are presented below.
+
+Query 1:
+
+subject: Joe Biden, rel: pursued, obj: ???
+
+Press enter or click to view image in full size
+
+Query 1 answer. Larger score is better.
+Query 2:
+
+subject: Donald Trump, rel: taking, obj: ???
+
+Press enter or click to view image in full size
+
+Query 2 answer. Larger score is better.
+Llama Index and Knowledge Graphs
+Now it is time to set the stage for our main actor. With clever use of LLM, without any training, just by manipulating context and prompt, we can force the model to output triplets from the text, and utilize them for structured reasoning. A library like Llama Index is an open-source tool, that can help us accomplish this goal.
+
+This concept extends the Retrieval Augmented Generation (RAG) with the possibility to extract (subject, relation, object) triplets.
+
+At its core, the Llama Index is composed of the following elements:
+
+Document base — each document is some source of information, that can be decomposed into nodes, which are even smaller chunks of data.
+Index — it consumes documents and, with the help of LLM + embedding model, builds an internal structure for data querying. Typically, each document is transformed into the embedding matrix.
+Storage— indexed documents are then stored somehow, e.g. in a form of a graph or embedding lookup table.
+Retriever — locates the index documents that closely match the query, extracts them, and injects them into the prompt. Such an extended context (user query + relevant data) is passed to LLM, that will form an answer.
+The official Llama Index documentation depicts this setup in the following figure:
+
+Press enter or click to view image in full size
+
+Llama index high-level concept. Source: official Llama index documentation.
+A much more detailed explanation of the basic concepts behind RAG and its Llama Index implementation can be found in the “concepts” section of the docs.
+
+Knowledge extraction using the Llama index and LLM
+We will use the same text as before, to build a knowledge graph using the Llama index and accompanying LLM. In this tutorial, I was using a local instance of Llama, but the whole mechanism remains unchanged, if you switch to OpenAI or another provider.
+
+The steps are as follows:
+
+First, we need to set up the LLM + embedding model.
+Next, we build a ServiceContext — a generic tool, that will be used to communicate with the indexing engine and retrieval mechanism.
+After this is done — we read documents as plain text.
+Documents are passed to the Knowledge Graph Index.
+The index extracts triplets using a simple trick: a special prompt + parser of results that force selected LLM to output (subject, relation, object) as plain text. The prompt (extended by me to enforce common spelling for the same entities) can be found below (I have added last two lines about consistent spelling):
+Some text is provided below. 
+Given the text, extract up to {max_knowledge_triplets} knowledge triplets 
+in the form of (subject, predicate, object). Avoid stopwords.
+---------------------
+Example:Text: Alice is Bob's mother.Triplets:
+(Alice, is mother of, Bob)
+Text: Philz is a coffee shop founded in Berkeley in 1982.
+Triplets:
+(Philz, is, coffee shop)
+(Philz, founded in, Berkeley)
+(Philz, founded in, 1982)
+---------------------
+
+When you encounter entities that look similar but are differently spelled (e.g. John Doe and J. Doe),
+use one name for all occurences, when extracting them from text.
+
+Text: {text}
+
+Triplets:
+
+Once this is done, we can analyze the knowledge graph directly.
+Llama Index comes with a predefined parser that will read LLM output and extract subject, relation, and object to separate lists. This is just a plain and simple parsing of text — without complicated backpropagation, gradient calculation, etc.
+
+6. Once this is done, we can analyse the knowledge graph directly.
+
+7. If we want — we can use the query engine to turn graph representation into nicely formatted text.
+
+Let’s see these elements in action.
+
+# Step 1: prepare LLM and embedding model. I use local instances.
+llm, embed = utils.setup_local_llama()
+
+# Step 2: Service context
+service_context = ServiceContext.from_defaults(llm=llm, embed_model=embed)
+set_global_service_context(service_context)
+
+# Step 3: Read raw documents
+documents = SimpleDirectoryReader(os.path.join(os.pardir, 'data')).load_data()
+
+# Step 4 & 5: Prapre prompt template and knowledge graph
+
+prompt_text = DEFAULT_KG_TRIPLET_EXTRACT_TMPL[:-23] + """
+When you encounter entities that look similar but are differently spelled (e.g. John Doe and J. Doe),
+use one name for all occurences, when extracting them from text.
+
+Text: {text}
+
+Triplets:
+"""
+prompt_template = PromptTemplate(prompt_text)
+kgi = KnowledgeGraphIndex.from_documents(
+    documents, 
+    max_triplets_per_chunk=50,
+    prompt_template=prompt_template)
+In the middle of the process, we can see, that LLM outputs some example triplets:
+
+(Joe Biden, restoring,         normalcy to White House)
+(Joe Biden, has,               more traditional policies)
+(Joe Biden, has,               centrist policies)
+(Trump,     known for,         America First approach)
+(Trump,     pulling back from, international agreements)
+(Trump,     prioritizing,      interests of United States)
+The graph looks like this (note, that your results might differ from mine).
+
+Press enter or click to view image in full size
+
+LLM knowledge graph visualization.
+Now we can turn our index into the query engine. Under the hood, for each query that we send, Llama Index will fetch the appropriate data from the index (triplets in our case), add it to the prompt, that we designed earlier, and send it all to the LLM of our choice. LLM’s response should be hallucination-free and based on the information provided.
+
+The following code snippet demonstrates how to achieve this effect.
+
+kg_query_engine = kgi.as_query_engine()
+
+kg_resp1 = kg_query_engine.query("Compare agendas pursued by both Trump and Biden. Start explanation for each candidate from newline (\n)")
+print(kg_resp1)
+
+>> Trump pursued a largely conservative agenda, focusing on efforts 
+   to repeal the Affordable Care Act, rolling back environmental regulations, 
+   cutting taxes for businesses and the wealthy, 
+   and implementing hardline immigration policies such 
+   as the zero tolerance policy at the border and the travel ban 
+   targeting predominantly Muslim countries.
+
+   Biden, on the other hand, has pursued a more liberal agenda, 
+   with a focus on addressing issues such as racial justice, healthcare, 
+   and climate change. He has signed executive orders on voting rights, 
+   gun control, and climate change issues and proposed legislation on 
+   healthcare, infrastructure, and immigration reform.
+We can restrict LLM even further, forcing it to rely only on the information that is available in the context. To achieve this we must use include_text=False and response_mode=”tree_summarize” when building a query engine. This will leave the LLM less freedom to experiment with formulating answers.
+
+kgi_graph_query_engine = kgi.as_query_engine(include_text=False, response_mode="tree_summarize")
+graph_resp1 = kgi_graph_query_engine.query("Summarize information about Trump")
+
+>> Trump is known for his America First approach, prioritizing 
+   the interests of the United States and pulling back from 
+   international agreements. He had a tumultuous relationship 
+   with world leaders and pursued a conservative agenda. 
+   Some of his actions included attempting to repeal the Affordable Care Act,
+   rolling back environmental regulations, cutting taxes for businesses 
+   and the wealthy, and implementing hardline immigration policies 
+   such as the zero tolerance policy at the border 
+   and a travel ban targeting Muslim countries. 
+
+   Trump is also known for his bold and combative approach, 
+   using Twitter to attack opponents. 
+   He faced accusations of corruption, abuse of power, and underwent 
+   an impeachment trial.
+We can clearly see, that this time the answer is less fluent, but packed with facts (often separated by repeated ‘and, and and’).
+
+Closing thoughts
+We have walked through the concepts of heterogeneous and knowledge graphs, the classic paradigm of structured knowledge extraction from RDF ontologies (like DbPedia), the utilisation of grammatical analysis for subject-verb-object triplets, and the latest advancements: LLMs and Retrieval Augmented Generation.
+
+Hopefully, you can see that knowledge extraction from text is not an easy or trivial process. The approach based on grammatical analysis required a lot of manual effort. Yet still, it missed many nuances and was unable to capture its very subtle contents.
+
+LLMs reinforced with knowledge graphs and the RAG concept seem more powerful and accurate in this matter. The process of linking things together is conveyed to the LLM, who is urged to adhere to the facts by retrieving data from the database.
+
+However, the RAG approach presented here gives no theoretical guarantee that the LLM will not hallucinate. In fact, simpler LLMs, with fewer parameters, can ignore the prompt completely and carry on with an answer of their own.
+
+Definitely, RAG and knowledge base building are steps in the right direction, especially since they do not require expensive gradient-based training.
+
+Bibliography
+Arora, S. (2020). A survey on graph neural networks for knowledge graph completion. arXiv preprint arXiv:2007.12374.
+
+Bordes, A., et al. (2013). Translating embeddings for modeling multi-relational data. NIPS.
+
+Cheong, H., Li, W., Cheung, A., Nogueira, A., & Iorio, F. (2017). Automated extraction of function knowledge from text. Journal of Mechanical Design, 139(11), 111407.
+
+Shi, J., Li, M., & Zhao, J. (2023). Heterogeneous Graph Neural Network Knowledge Graph Completion Model Based on Improved Attention Mechanism. In International Conference on Artificial Neural Networks (pp. 423–434). Cham: Springer Nature Switzerland.
+
+Sun, Y., & Han, J. (2013). Mining heterogeneous information networks: a structural analysis approach. Acm Sigkdd Ex/plorations Newsletter, 14(2), 20–28.
+
+Temizer, M., & Diri, B. (2012, July). Automatic subject-object-verb relation extraction. In 2012 International Symposium on Innovations in Intelligent Systems and Applications (pp. 1–4). IEEE.
