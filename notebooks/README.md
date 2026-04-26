@@ -8,10 +8,16 @@ You can run the notebooks with either a file-based database (FalkorDBLite) or a 
 
 ### Option A — FalkorDBLite (file-based, no Docker)
 
-Install the lightweight dependency:
+Install the notebook stack from a repository checkout:
 
 ```bash
-uv sync --group falkordblite
+uv sync --extra falkordblite --extra notebooks --extra viz
+```
+
+If you only need the published package dependencies, install:
+
+```bash
+pip install 'grawiki[falkordblite,notebooks,viz]'
 ```
 
 Use it in Python:
@@ -30,7 +36,19 @@ graph = FalkorGraphDB(
 Start the database server:
 
 ```bash
-cd notebooks && docker-compose up -d
+docker compose -f notebooks/docker-compose.yml up -d
+```
+
+Install the Docker-backed notebook stack from a repository checkout:
+
+```bash
+uv sync --extra falkordb --extra notebooks --extra viz
+```
+
+If you only need the published package dependencies, install:
+
+```bash
+pip install 'grawiki[falkordb,notebooks,viz]'
 ```
 
 Use it in Python:

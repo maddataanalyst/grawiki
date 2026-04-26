@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing_extensions import Literal
+from typing import Literal
 
 from grawiki.core.embedding import Embedding
 from grawiki.db.base import GraphDB, NodeHit

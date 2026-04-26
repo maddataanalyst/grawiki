@@ -1,0 +1,4 @@
+private/
+.kilo/
+AGENTS.md
+private/public/

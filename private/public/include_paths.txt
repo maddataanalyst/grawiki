@@ -1,0 +1,10 @@
+README.md
+LICENSE
+pyproject.toml
+mkdocs.yml
+.readthedocs.yaml
+src/grawiki/
+tests/
+docs/
+notebooks/
+.github/workflows/

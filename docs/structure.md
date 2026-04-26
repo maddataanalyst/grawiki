@@ -18,13 +18,13 @@ Pytest coverage for `GraphRAG`, the modular ingestion-step API, the retrieval la
 
 Official MkDocs documentation source. It includes narrative pages and generated API reference pages under `docs/api/`, with `GraphRAG` as the main entry point.
 
-### `agent_tools/`
-
-Internal contributor and agent-facing guidance, plans, and repository maps. `agent_tools/CODEMAP.md` is the main orientation guide for contributors.
-
 ### `notebooks/`
 
-Maintained tutorial notebooks plus supporting debug scripts and sample data. The main walkthrough starts in `01_ingest_and_deduplicate.ipynb`, then continues into agent memory in `02_agent_memory_and_recall.ipynb` and visualization in `03_visualize_graph.ipynb`.
+Maintained tutorial notebooks plus sample data. The main walkthrough starts in `01_ingest_and_deduplicate.ipynb`, then continues into agent memory in `02_agent_memory_and_recall.ipynb` and visualization in `03_visualize_graph.ipynb`.
+
+### `.github/workflows/`
+
+Public CI workflows used to validate package artifacts and release tags.
 
 ## Important top-level files
 
@@ -32,8 +32,6 @@ Maintained tutorial notebooks plus supporting debug scripts and sample data. The
 - `mkdocs.yml`: public documentation site configuration.
 - `.readthedocs.yaml`: Read the Docs build configuration.
 - `pyproject.toml`: package metadata, dependencies, and tool configuration.
-- `main.py`: minimal placeholder entrypoint.
-- `AGENTS.md`: repository-specific operating instructions for coding agents.
 
 ## Package map
 

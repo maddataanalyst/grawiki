@@ -9,8 +9,6 @@ from pathlib import Path
 from typing import cast
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
-from redis.exceptions import ResponseError
-
 from grawiki.db.base import GraphDB, NeighborRelationship, NodeHit, SearchResults
 from grawiki.db.cypher import (
     link_nodes_cypher,
@@ -1259,8 +1257,11 @@ class FalkorGraphDB(GraphDB):
 
         try:
             return self.query("CALL db.indexes()").result_set
-        except ResponseError as exc:
-            if "empty key" in str(exc).lower():
+        except Exception as exc:
+            if (
+                exc.__class__.__name__ == "ResponseError"
+                and "empty key" in str(exc).lower()
+            ):
                 return []
             raise
 

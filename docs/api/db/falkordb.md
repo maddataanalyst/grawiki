@@ -18,14 +18,16 @@ Install the dependency set that matches the deployment mode.
 ### FalkorDBLite
 
 ```bash
-uv sync --group falkordblite
+pip install 'grawiki[falkordblite]'
 ```
 
 ### Full FalkorDB server
 
 ```bash
-uv sync --group falkordb
+pip install 'grawiki[falkordb]'
 ```
+
+If you are working from a repository checkout and want a local editable environment instead, use `uv sync --extra falkordblite` or `uv sync --extra falkordb`.
 
 If you want a local Docker-backed server for examples or notebook work, start the compose file from the repository root:
 

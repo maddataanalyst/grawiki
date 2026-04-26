@@ -32,7 +32,7 @@ and the FalkorDB adapter.
 
 ### `notebooks/`
 
-Maintained tutorial notebooks plus supporting debug scripts, local database files, and experimental input data. The main walkthrough now lives in `01_ingest_and_deduplicate.ipynb`, `02_agent_memory_and_recall.ipynb`, and `03_visualize_graph.ipynb`.
+Maintained tutorial notebooks plus experimental input data. The main walkthrough now lives in `01_ingest_and_deduplicate.ipynb`, `02_agent_memory_and_recall.ipynb`, and `03_visualize_graph.ipynb`.
 
 ### `docs/`
 
@@ -41,10 +41,22 @@ This now includes both narrative pages and generated API wrapper pages under
 `docs/api/`, with `GraphRAG` as the main entry point and dedicated similarity /
 deduplication reference pages.
 
-### `agent_tools/`
+### `.github/workflows/`
+
+Public CI workflows for package validation and release publishing.
+
+### `private/agents/`
 
 Internal contributor and agent-facing guidance, plans, and repository maps.
 `CODEMAP.md` lives here.
+
+### `private/public/`
+
+Private public-mirror automation.
+
+- `include_paths.txt`: allowlisted paths exported to the public mirror.
+- `forbidden_references.txt`: strings that must not appear in mirrored content.
+- `sync_public.sh`: builds the `sanitized` branch from an allowlisted Git export of private `HEAD`.
 
 ## Top-Level Files
 
@@ -54,7 +66,7 @@ Minimal placeholder entrypoint. It currently just prints a message and is not th
 
 ### `pyproject.toml`
 
-Project metadata, dependency declarations, and development tool configuration. Optional notebook and visualization installs live under `[project.optional-dependencies]` as `notebooks` and `viz`.
+Project metadata, dependency declarations, and development tool configuration. Optional consumer installs live under `[project.optional-dependencies]` as `docs`, `notebooks`, `viz`, `falkordb`, `falkordblite`, and `all`.
 
 ### `README.md`
 
@@ -62,7 +74,7 @@ Short project overview and developer setup commands.
 
 ### `AGENTS.md`
 
-Repository-specific operating instructions for coding agents.
+Repository-specific operating instructions for coding agents. This file is private and excluded from the public mirror.
 
 ### `mkdocs.yml`
 
@@ -258,7 +270,7 @@ Key responsibilities:
 - Requires explicit `close()` during teardown in tests and scripts.
 - Provides lower-level query helpers for debugging and experimentation.
 
-This is currently the main persistence backend used by the repository. For local development use FalkorDBLite (`uv sync --group falkordblite`). For production or shared environments use full FalkorDB via Docker (`uv sync --group falkordb`, then `docker compose -f private/docker-compose.yml up -d`).
+This is currently the main persistence backend used by the repository. For local development use FalkorDBLite (`uv sync --extra falkordblite`). For production or shared environments use full FalkorDB via Docker (`uv sync --extra falkordb`, then `docker compose -f notebooks/docker-compose.yml up -d`).
 
 #### `src/grawiki/db/__init__.py`
 

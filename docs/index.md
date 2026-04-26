@@ -49,8 +49,7 @@ The repository is organized around a few major areas:
 - `src/grawiki/` contains the reusable project code.
 - `tests/` contains pytest coverage for the facade, retrieval, graph models, extraction, and the FalkorDB adapter.
 - `docs/` contains the public MkDocs site, including generated API pages under `docs/api/`.
-- `agent_tools/` contains internal contributor and agent-facing guidance such as `CODEMAP.md`.
-- `notebooks/` contains focused tutorial notebooks, supporting debug scripts, and sample text inputs.
+- `notebooks/` contains focused tutorial notebooks and sample text inputs.
 
 At the package level:
 
@@ -78,12 +77,12 @@ To install the tutorial dependencies, choose one:
 
 - For file-based (FalkorDBLite):
   ```bash
-  uv sync --group falkordblite --extra notebooks --extra viz
+  pip install 'grawiki[falkordblite,notebooks,viz]'
   ```
 
 - For Docker-based (full FalkorDB):
   ```bash
-  uv sync --group falkordb --extra notebooks --extra viz
+  pip install 'grawiki[falkordb,notebooks,viz]'
   ```
 
 The sample texts used there are Medium articles by Filip Wojcik. They are available from his public Medium profile and are accessible without a subscription.

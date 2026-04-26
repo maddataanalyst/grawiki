@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="grawiki_text_logo.png" alt="GraWiki" width="460">
-</p>
+# GraWiki
 
 GraWiki is an early-stage open source Python project for graph-backed knowledge
 extraction, retrieval, and agent memory.
@@ -12,9 +10,7 @@ It combines two closely related ideas:
 
 The project uses an LLM to turn text into structured graph data, persists that
 data in a graph database, and then reuses the same graph for search, memory
-recall, similarity inspection, and duplicate-entity cleanup. The goal is not
-just classic document RAG, but a more durable knowledge organization layer for
-LLM systems.
+recall, similarity inspection, and duplicate-entity cleanup.
 
 ## What GraWiki does
 
@@ -28,13 +24,6 @@ GraWiki currently focuses on two main workflows.
    Agent outputs can be stored as dedicated `__memory__` nodes, linked back into
    the graph, and later recalled together with connected context.
 
-This gives the project a hybrid shape:
-
-- part GraphRAG ingestion pipeline,
-- part retrieval layer over graph-backed context,
-- part persistent memory store for agent interactions,
-- part duplicate-entity inspection and deduplication toolkit.
-
 Current capabilities include:
 
 - reading source documents and splitting them into chunks,
@@ -45,17 +34,41 @@ Current capabilities include:
 - inspecting duplicate candidates through semantic-key collision checks and pluggable similarity matchers,
 - merging duplicate entities through the facade-level deduplication workflow.
 
-## Project layout
+## Installation
 
-The repository is organized around a small number of major areas.
+Install the base package:
 
-### Top-level folders
+```bash
+pip install grawiki
+```
+
+Install the local file-backed FalkorDBLite backend:
+
+```bash
+pip install 'grawiki[falkordblite]'
+```
+
+Install the full FalkorDB server backend:
+
+```bash
+pip install 'grawiki[falkordb]'
+```
+
+Useful optional extras:
+
+- `grawiki[notebooks]` for the maintained notebooks.
+- `grawiki[viz]` for `networkx` and `matplotlib` graph visualization.
+- `grawiki[docs]` for local MkDocs builds.
+- `grawiki[all]` for the full optional dependency set.
+
+## Package layout
+
+The public repository is organized around a small number of major areas.
 
 - `src/grawiki/`: main application package.
-- `tests/`: pytest suite for the facade, retrieval layer, graph models, extraction, query generation, and FalkorDB adapter.
+- `tests/`: pytest coverage for the facade, retrieval layer, graph models, extraction, query generation, and FalkorDB adapter.
 - `docs/`: public MkDocs documentation, including narrative pages and generated API reference pages under `docs/api/`.
-- `agent_tools/`: internal contributor and agent-facing guides, plans, and repository maps such as `agent_tools/CODEMAP.md`.
-- `notebooks/`: focused tutorial notebooks plus supporting debug scripts and sample input data.
+- `notebooks/`: maintained tutorial notebooks plus sample input data.
 
 ### Main package structure
 
@@ -89,8 +102,7 @@ At a high level, GraWiki works like this:
 
 ## Documentation
 
-Public documentation lives in `docs/` and is built with MkDocs Material.
-It includes:
+Public documentation lives in `docs/` and is built with MkDocs Material. It includes:
 
 - conceptual background,
 - flow documentation,
@@ -117,10 +129,22 @@ Install development tooling:
 uv sync --group dev
 ```
 
-Install FalkorDB support:
+Install development tooling with the FalkorDBLite notebook stack:
 
 ```bash
-uv sync --group falkordb
+uv sync --group dev --extra falkordblite --extra notebooks --extra viz
+```
+
+Install development tooling with the Docker-backed FalkorDB stack:
+
+```bash
+uv sync --group dev --extra falkordb --extra notebooks --extra viz
+```
+
+Install the documentation toolchain:
+
+```bash
+uv sync --group dev --extra docs
 ```
 
 Install git hooks:
@@ -135,28 +159,10 @@ Run all configured checks manually:
 uv run pre-commit run --all-files
 ```
 
-Install the optional notebook toolchain:
+Run the test suite:
 
 ```bash
-uv sync --extra notebooks
-```
-
-Install the optional visualization dependencies:
-
-```bash
-uv sync --extra viz
-```
-
-Install the full notebook stack with FalkorDB:
-
-```bash
-uv sync --group falkordb --extra notebooks --extra viz
-```
-
-Install the optional documentation toolchain:
-
-```bash
-uv sync --extra docs
+uv run pytest
 ```
 
 Build the public documentation site locally:

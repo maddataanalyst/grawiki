@@ -724,12 +724,33 @@ dependencies = [
     { name = "chonkie" },
     { name = "joblib" },
     { name = "pandas" },
+    { name = "pydantic" },
     { name = "pydantic-ai-slim", extra = ["openai", "openrouter"] },
     { name = "rapidfuzz" },
     { name = "unstructured" },
 ]
 
 [package.optional-dependencies]
+all = [
+    { name = "autoroot" },
+    { name = "falkordb" },
+    { name = "falkordblite" },
+    { name = "ipykernel" },
+    { name = "ipywidgets" },
+    { name = "matplotlib" },
+    { name = "mkdocs" },
+    { name = "mkdocs-autorefs" },
+    { name = "mkdocs-bibtex" },
+    { name = "mkdocs-copy-to-llm" },
+    { name = "mkdocs-material" },
+    { name = "mkdocs-mermaid2-plugin" },
+    { name = "mkdocstrings", extra = ["python"] },
+    { name = "networkx" },
+    { name = "pymdown-extensions" },
+    { name = "python-dotenv" },
+    { name = "rich" },
+    { name = "tqdm" },
+]
 docs = [
     { name = "mkdocs" },
     { name = "mkdocs-autorefs" },
@@ -739,6 +760,12 @@ docs = [
     { name = "mkdocs-mermaid2-plugin" },
     { name = "mkdocstrings", extra = ["python"] },
     { name = "pymdown-extensions" },
+]
+falkordb = [
+    { name = "falkordb" },
+]
+falkordblite = [
+    { name = "falkordblite" },
 ]
 notebooks = [
     { name = "autoroot" },
@@ -760,39 +787,54 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
 ]
-falkordb = [
-    { name = "falkordb" },
-]
-falkordblite = [
-    { name = "falkordblite" },
-]
 
 [package.metadata]
 requires-dist = [
+    { name = "autoroot", marker = "extra == 'all'", specifier = ">=1.0.1" },
     { name = "autoroot", marker = "extra == 'notebooks'", specifier = ">=1.0.1" },
     { name = "chonkie", specifier = ">=1.6.2" },
+    { name = "falkordb", marker = "extra == 'all'", specifier = ">=1.6.0" },
+    { name = "falkordb", marker = "extra == 'falkordb'", specifier = ">=1.6.0" },
+    { name = "falkordblite", marker = "extra == 'all'", specifier = ">=0.9.0" },
+    { name = "falkordblite", marker = "extra == 'falkordblite'", specifier = ">=0.9.0" },
+    { name = "ipykernel", marker = "extra == 'all'", specifier = ">=7.2.0" },
     { name = "ipykernel", marker = "extra == 'notebooks'", specifier = ">=7.2.0" },
+    { name = "ipywidgets", marker = "extra == 'all'", specifier = ">=8.1.7" },
     { name = "ipywidgets", marker = "extra == 'notebooks'", specifier = ">=8.1.7" },
     { name = "joblib", specifier = ">=1.5.3" },
+    { name = "matplotlib", marker = "extra == 'all'", specifier = ">=3.10.7" },
     { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.10.7" },
+    { name = "mkdocs", marker = "extra == 'all'", specifier = ">=1.6.1" },
     { name = "mkdocs", marker = "extra == 'docs'", specifier = ">=1.6.1" },
+    { name = "mkdocs-autorefs", marker = "extra == 'all'", specifier = ">=1.4.2" },
     { name = "mkdocs-autorefs", marker = "extra == 'docs'", specifier = ">=1.4.2" },
+    { name = "mkdocs-bibtex", marker = "extra == 'all'", specifier = ">=4.4.0" },
     { name = "mkdocs-bibtex", marker = "extra == 'docs'", specifier = ">=4.4.0" },
+    { name = "mkdocs-copy-to-llm", marker = "extra == 'all'", specifier = ">=0.2.0" },
     { name = "mkdocs-copy-to-llm", marker = "extra == 'docs'", specifier = ">=0.2.0" },
+    { name = "mkdocs-material", marker = "extra == 'all'", specifier = ">=9.6.20" },
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.6.20" },
+    { name = "mkdocs-mermaid2-plugin", marker = "extra == 'all'", specifier = ">=1.1.1" },
     { name = "mkdocs-mermaid2-plugin", marker = "extra == 'docs'", specifier = ">=1.1.1" },
+    { name = "mkdocstrings", extras = ["python"], marker = "extra == 'all'", specifier = ">=0.30.1" },
     { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.30.1" },
+    { name = "networkx", marker = "extra == 'all'", specifier = ">=3.5" },
     { name = "networkx", marker = "extra == 'viz'", specifier = ">=3.5" },
     { name = "pandas", specifier = ">=3.0.2" },
+    { name = "pydantic", specifier = ">=2.11.7" },
     { name = "pydantic-ai-slim", extras = ["openai", "openrouter"], specifier = ">=1.84.1" },
+    { name = "pymdown-extensions", marker = "extra == 'all'", specifier = ">=10.15" },
     { name = "pymdown-extensions", marker = "extra == 'docs'", specifier = ">=10.15" },
+    { name = "python-dotenv", marker = "extra == 'all'", specifier = ">=1.1.1" },
     { name = "python-dotenv", marker = "extra == 'notebooks'", specifier = ">=1.1.1" },
     { name = "rapidfuzz", specifier = ">=3.14.5" },
+    { name = "rich", marker = "extra == 'all'", specifier = ">=14.2.0" },
     { name = "rich", marker = "extra == 'notebooks'", specifier = ">=14.2.0" },
+    { name = "tqdm", marker = "extra == 'all'", specifier = ">=4.67.1" },
     { name = "tqdm", marker = "extra == 'notebooks'", specifier = ">=4.67.1" },
     { name = "unstructured", specifier = ">=0.22.21" },
 ]
-provides-extras = ["docs", "notebooks", "viz"]
+provides-extras = ["docs", "notebooks", "viz", "falkordb", "falkordblite", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -801,8 +843,6 @@ dev = [
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "ruff", specifier = ">=0.15.11" },
 ]
-falkordb = [{ name = "falkordb", specifier = ">=1.6.0" }]
-falkordblite = [{ name = "falkordblite", specifier = ">=0.9.0" }]
 
 [[package]]
 name = "griffelib"

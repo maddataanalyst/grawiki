@@ -20,10 +20,10 @@ The repository currently focuses on two core capabilities:
 - `src/grawiki/similarity/`: entity duplicate inspection and similarity matching.
 - `src/grawiki/rag/`: high-level `GraphRAG` facade.
 - `tests/`: pytest coverage for the facade, retrieval primitives, and FalkorDB adapter.
-- `main.py`: minimal entrypoint.
 - `notebooks/`: exploratory research and debugging notebooks.
 - `docs/`: official public MkDocs documentation source.
-- `agent_tools/`: internal contributor and agent-facing documentation, including `agent_tools/CODEMAP.md`.
+- `private/agents/`: internal contributor and agent-facing documentation, including `private/agents/CODEMAP.md`.
+- `private/public/`: private public-mirror automation, allowlist policy, and forbidden-reference rules.
 - `mkdocs.yml`: MkDocs site configuration for the public docs.
 - `.readthedocs.yaml`: Read the Docs build configuration.
 
@@ -54,9 +54,17 @@ The repository currently focuses on two core capabilities:
    - Use the configured `pre-commit` hooks before committing changes.
    - Ensure `ruff` checks pass before opening or updating a pull request.
 
-5. Keep `agent_tools/CODEMAP.md` in sync with architecture changes.
-   - When you add a new subsystem, public API surface, workflow, or important implementation area, update `agent_tools/CODEMAP.md` in the same change.
+5. Keep `private/agents/CODEMAP.md` in sync with architecture changes.
+   - When you add a new subsystem, public API surface, workflow, or important implementation area, update `private/agents/CODEMAP.md` in the same change.
    - When behavior changes enough to invalidate the existing repository map, refresh the relevant sections before finishing the task.
+
+## Public Mirror Workflow
+
+- The public mirror is allowlist-based. Update `private/public/include_paths.txt` whenever a new top-level public path should be mirrored.
+- `sanitized` is generated output, not a merge target. Do not merge private branches into it.
+- Run `private/public/sync_public.sh` only from a completely clean private working tree.
+- Direct pushes from private development branches to the `public` remote are forbidden.
+- Public syncs must flow through `private/public/sync_public.sh`, which exports the allowlisted `HEAD` tree and runs leak checks before commit or push.
 
 ## Standard Developer Commands
 
