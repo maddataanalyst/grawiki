@@ -40,4 +40,3 @@ def test_chunk_node_from_chunk_uses_deterministic_name() -> None:
     assert node.name == "Chunk chunk_001"
     assert node.document_id == "document_computing_machinery"
     assert node.metadata == {"order": "1"}
-
