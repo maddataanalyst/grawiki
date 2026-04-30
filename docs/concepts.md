@@ -63,11 +63,15 @@ The general extraction pattern is:
 4. Normalize entity names and relation labels.
 5. Validate and persist the resulting graph.
 
+GraWiki uses the [Instructor](https://python.useinstructor.com/) library to turn LLM responses into validated Pydantic objects. Instead of parsing free-form text, the extractor sends a system prompt plus the source text to the model and requests an `ExtractedKnowledgeGraph` response model. Instructor validates the JSON against the Pydantic schema, retries on validation failures when supported by the provider, and returns a native Python object ready for embedding and persistence.
+
 Recent work has explored this pattern directly, including benchmark and survey
 work on LLM-based graph construction from text [@gillani2024kgextraction;
 @mihindukulasooriya2023text2kgbench; @zhu2024llmkg].
 
 GraWiki follows that family of approaches but keeps the persistence and retrieval layers simple: extract typed entities and relations, persist them, and retrieve from the resulting graph later.
+
+For markdown sources, GraWiki can also preserve structural regions during chunking when configured with a Markdown-aware chunker. That means prose, code blocks, and tables can be chunked separately before extraction instead of being flattened into one generic text stream.
 
 ## From knowledge graph to graph learning
 

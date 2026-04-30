@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
+import instructor
 from typing import Protocol, Sequence
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent
 
 from grawiki.core.embedding import Embedding
 from grawiki.db.base import GraphDB, NeighborRelationship, NodeHit
@@ -38,22 +38,42 @@ KEYWORDS_EXTRACTION_PROMPT = (
 
 
 class _AgentKeywordExtractor:
-    """Keyword extractor backed by a PydanticAI structured-output agent."""
+    """Keyword extractor backed by an instructor client for structured output."""
 
-    def __init__(self, model: str) -> None:
-        self._agent = Agent(
-            model=model,
-            output_type=Keywords,
-            system_prompt=KEYWORDS_EXTRACTION_PROMPT,
-        )
+    def __init__(
+        self, model: str, extraction_prompt: str = KEYWORDS_EXTRACTION_PROMPT
+    ) -> None:
+        self._model = model
+        self.extraction_prompt = extraction_prompt
+        self._extraction_client = None
+
+    @property
+    def extraction_client(self):
+        """Lazy instructor client initialized on first use."""
+        if self._extraction_client is None:
+            self._extraction_client = instructor.from_provider(
+                self._model, async_client=True
+            )
+        return self._extraction_client
 
     async def extract(self, query: str) -> list[str]:
-        """Extract keyword phrases from ``query`` using the configured agent."""
-
-        result = await self._agent.run(query)
-        if result is None or result.output is None:
+        """Extract keyword phrases from ``query`` using the configured client."""
+        result = await self.extraction_client.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": self.extraction_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": "Extract keywords from the following query:\n\n" + query,
+                },
+            ],
+            response_model=Keywords,
+        )
+        if result is None:
             return []
-        return list(result.output.keywords)
+        return list(result.keywords)
 
 
 class KeywordsPathRetriever(Retriever):

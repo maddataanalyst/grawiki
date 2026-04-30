@@ -14,7 +14,7 @@ from pydantic_ai import Embedder
 from grawiki.core.commons import Chunk, Document
 from grawiki.core.embedding import Embedding
 from grawiki.db.base import GraphDB, NeighborRelationship, NodeHit
-from grawiki.doc_processing.chunkers import Chunker
+from grawiki.doc_processing.chunkers import Chunker, MarkdownChunker
 from grawiki.doc_processing.document_processing import chunk_document, read_document
 from grawiki.graph.extraction import (
     KnowledgeGraphExtractor,
@@ -59,6 +59,9 @@ class GraphRAG:
         Graph database adapter used for persistence and search.
     chunking_strategy : str, optional
         Chunking strategy passed to :class:`~grawiki.doc_processing.chunkers.Chunker`.
+    markdown_chunker : MarkdownChunker | None, optional
+        Dedicated markdown-aware chunker used for ``.md`` / ``.markdown`` files
+        and in-memory text ingestion when configured.
     max_workers : int, optional
         Maximum number of concurrent chunk-level extraction coroutines.
     embedding : Embedding | None, optional
@@ -89,6 +92,7 @@ class GraphRAG:
         chunking_strategy: Literal[
             "fast", "recursive", "semantic", "sentence", "token"
         ] = "sentence",
+        markdown_chunker: MarkdownChunker | None = None,
         max_workers: int = 4,
         embedding: Embedding | None = None,
         kg_extractor: KnowledgeGraphExtractorProtocol | None = None,
@@ -109,6 +113,8 @@ class GraphRAG:
             Graph database adapter used for persistence and search.
         chunking_strategy : {"fast", "recursive", "semantic", "sentence", "token"}, optional
             Chunking strategy used by the internal :class:`~grawiki.doc_processing.chunkers.Chunker`.
+        markdown_chunker : MarkdownChunker | None, optional
+            Dedicated markdown-aware chunker used when the document appears to be markdown.
         max_workers : int, optional
             Maximum number of concurrent chunk-level extraction coroutines.
         embedding : Embedding | None, optional
@@ -142,6 +148,7 @@ class GraphRAG:
         self.max_workers = max_workers
         self._db = db
         self._chunker = Chunker(strategy=chunking_strategy)
+        self._markdown_chunker = markdown_chunker
         self._max_workers = max_workers
         self._embedding = embedding or Embedder(embedding_model)
         self._extractor = kg_extractor or KnowledgeGraphExtractor(
@@ -186,13 +193,22 @@ class GraphRAG:
         logger.info("Reading document from %s", path)
         return read_document(path)
 
-    def chunk_document(self, document: Document) -> list[Chunk]:
+    def chunk_document(
+        self,
+        document: Document,
+        path: Path | None = None,
+    ) -> list[Chunk]:
         """Split a document into chunks.
 
         Parameters
         ----------
         document : Document
             Source document to segment.
+        path : Path | None, optional
+            Filesystem path to the source document. MarkdownChef is used when a
+            markdown chunker is configured and the path suffix is ``.md`` or
+            ``.markdown``. When no path is available, configured markdown
+            chunking is used for in-memory text.
 
         Returns
         -------
@@ -201,27 +217,36 @@ class GraphRAG:
         """
 
         logger.info("Chunking document %s", document.id)
-        chunks = chunk_document(document, self._chunker)
+        is_markdown_path = path is not None and path.suffix.lower() in {
+            ".md",
+            ".markdown",
+        }
+        if self._markdown_chunker and (path is None or is_markdown_path):
+            logger.info("Using dedicated markdown chunker for document %s", document.id)
+            chunks = self._markdown_chunker.chunk(document, source_path=path)
+        else:
+            chunks = chunk_document(document, self._chunker)
         logger.info("Created %s chunks for document %s", len(chunks), document.id)
         return chunks
 
     async def embed_document(self, document: Document) -> list[float]:
-        """Embed one document's content.
+        """Return no document-level embedding for ingestion.
 
         Parameters
         ----------
         document : Document
-            Source document whose content should be embedded.
+            Source document. Kept in the signature for step-method API
+            compatibility.
 
         Returns
         -------
         list[float]
-            Embedding vector for the document content.
+            Empty list. Document content is persisted without a vector; chunk,
+            entity, memory, and query embeddings remain the retrieval path.
         """
 
-        logger.info("Embedding document %s", document.id)
-        result = await self._embedding.embed_documents([document.content])
-        return list(result.embeddings[0])
+        logger.info("Skipping document-level embedding for document %s", document.id)
+        return []
 
     async def embed_chunks(self, chunks: list[Chunk]) -> list[list[float]]:
         """Embed chunk contents in one batch.
@@ -248,14 +273,16 @@ class GraphRAG:
     def build_document_node(
         self, document: Document, embedding: list[float]
     ) -> DocumentNode:
-        """Build a document node with its embedding attached.
+        """Build a document node with an optional embedding attached.
 
         Parameters
         ----------
         document : Document
             Source document to convert into a persisted node model.
         embedding : list[float]
-            Embedding vector for the document.
+            Optional embedding vector for the document. The ingestion path now
+            passes an empty list, but the parameter is retained for API
+            compatibility.
 
         Returns
         -------
@@ -680,10 +707,9 @@ class GraphRAG:
         logger.info("Starting ingestion for %s", path)
         await self._db.setup()
         document = self.read_document(path)
-        chunks = self.chunk_document(document)
-        document_embedding = await self.embed_document(document)
+        chunks = self.chunk_document(document, path)
         chunk_embeddings = await self.embed_chunks(chunks)
-        document_node = self.build_document_node(document, document_embedding)
+        document_node = self.build_document_node(document, [])
         chunk_nodes = self.build_chunk_nodes(chunks, chunk_embeddings)
         await self.persist_document_and_chunks(document_node, chunk_nodes)
         chunk_graphs = await self.extract_kg_per_chunk(chunks)
@@ -716,9 +742,8 @@ class GraphRAG:
         logger.info("Starting ingestion for text document %r", title)
         await self._db.setup()
         chunks = self.chunk_document(document)
-        document_embedding = await self.embed_document(document)
         chunk_embeddings = await self.embed_chunks(chunks)
-        document_node = self.build_document_node(document, document_embedding)
+        document_node = self.build_document_node(document, [])
         chunk_nodes = self.build_chunk_nodes(chunks, chunk_embeddings)
         await self.persist_document_and_chunks(document_node, chunk_nodes)
         chunk_graphs = await self.extract_kg_per_chunk(chunks)

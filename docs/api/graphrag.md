@@ -2,6 +2,8 @@
 
 [`GraphRAG`][grawiki.rag.graph_rag.GraphRAG] is the main public facade. It combines document ingestion, chunk-level graph extraction, retrieval, agent-memory persistence, and duplicate-entity inspection in one class.
 
+When constructed with a `markdown_chunker`, the ingestion helpers use Markdown-aware chunking for `.md` and `.markdown` files and for `ingest_text(...)`. In the default ingestion flow, vector embeddings are created for chunks, entities, memories, and queries, while document nodes are persisted without document-level vectors.
+
 The main entry points are:
 
 - `ingest(...)` and `ingest_text(...)` for document ingestion.

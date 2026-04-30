@@ -7,12 +7,14 @@ The public API centers on the `GraphRAG` facade in
 
 `GraphRAG.ingest(path)` is the main end-to-end ingestion flow. It reads a file, creates document and chunk nodes, extracts a chunk-level knowledge graph, optionally resolves extracted entities against persisted ones, and writes the resulting graph state to the database.
 
+If a `markdown_chunker` is configured, `.md` and `.markdown` files are segmented with Markdown-aware chunking so text, code, and table regions become ordered chunks. The same markdown-aware path is also used by `ingest_text(...)` when you ingest markdown already held in memory.
+
 ```mermaid
 flowchart TD
     A[Source file path] --> B[self._db.setup]
     B --> C[read_document]
     C --> D[chunk_document]
-    D --> E[embed_document]
+    D --> E[embed_document returns []]
     D --> F[embed_chunks]
     E --> G[build_document_node]
     F --> H[build_chunk_nodes]
@@ -26,7 +28,7 @@ flowchart TD
     M --> N[(Graph state updated)]
 ```
 
-The same steps are also available as public methods. That makes the pipeline easier to inspect in notebooks and debugging sessions. The maintained notebook workflow, and the corresponding [How to](how-to/index.md) guides, use these methods directly instead of relying only on the one-shot `ingest(...)` wrapper.
+The same steps are also available as public methods. That makes the pipeline easier to inspect in notebooks and debugging sessions. In the default ingestion path, chunk embeddings drive vector retrieval; document nodes are persisted without document-level vectors unless you intentionally add them later. The maintained notebook workflow, and the corresponding [How to](how-to/index.md) guides, use these methods directly instead of relying only on the one-shot `ingest(...)` wrapper.
 
 ## Memory and retrieval
 

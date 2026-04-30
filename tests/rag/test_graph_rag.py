@@ -8,8 +8,10 @@ from typing import Iterable, Mapping, Sequence
 
 import pytest
 
+from grawiki.core.commons import Document
 from grawiki.db.base import GraphDB, NeighborRelationship, NodeHit
 from grawiki.graph.models import KnowledgeGraph, MemoryNode, Node, Relationship
+from grawiki.doc_processing.chunkers import MarkdownChunker
 from grawiki.rag.graph_rag import GraphRAG
 from grawiki.retrieval.text import TextRetriever
 from grawiki.similarity.deduplication import MergeReport
@@ -27,14 +29,20 @@ class FakeEmbeddingResult:
 class FakeEmbedder:
     """Deterministic embedder used for GraphRAG tests."""
 
+    def __init__(self) -> None:
+        self.document_inputs: list[list[str]] = []
+        self.query_inputs: list[str | list[str]] = []
+
     async def embed_documents(self, documents: str | list[str]) -> FakeEmbeddingResult:
         texts = [documents] if isinstance(documents, str) else list(documents)
+        self.document_inputs.append(texts)
         embeddings = [
             [float(len(text)), float(len(text.split())), 1.0] for text in texts
         ]
         return FakeEmbeddingResult(embeddings)
 
     async def embed_query(self, query: str | list[str]) -> FakeEmbeddingResult:
+        self.query_inputs.append(query)
         texts = [query] if isinstance(query, str) else list(query)
         embeddings = [[42.0, float(len(text)), 7.0] for text in texts]
         return FakeEmbeddingResult(embeddings)
@@ -201,6 +209,16 @@ class FailingRetriever:
         raise RuntimeError("retriever failed")
 
 
+class StaticKeywordExtractor:
+    """Keyword extractor stub returning predefined keywords."""
+
+    def __init__(self, keywords: list[str]) -> None:
+        self.keywords = keywords
+
+    async def extract(self, query: str) -> list[str]:
+        return list(self.keywords)
+
+
 class ConcurrencyTrackingExtractor:
     """Extractor stub that tracks maximum concurrent executions."""
 
@@ -237,12 +255,13 @@ def test_graph_rag_step_methods_and_ingest(tmp_path: Path) -> None:
     search_labels = ["__chunk__", "__entity__"]
 
     graph_db = FakeGraphDB()
+    embedder = FakeEmbedder()
     rag = GraphRAG(
         model="test-model",
         embedding_model="test-embedding",
         db=graph_db,
         max_workers=2,
-        embedding=FakeEmbedder(),
+        embedding=embedder,
         kg_extractor=ConcurrencyTrackingExtractor(),
         retrievers=(
             TextRetriever(
@@ -257,6 +276,8 @@ def test_graph_rag_step_methods_and_ingest(tmp_path: Path) -> None:
     document = rag.read_document(input_path)
     chunks = rag.chunk_document(document)
     document_embedding = asyncio.run(rag.embed_document(document))
+    assert document_embedding == []
+    assert embedder.document_inputs == []
     chunk_embeddings = asyncio.run(rag.embed_chunks(chunks))
     document_node = rag.build_document_node(document, document_embedding)
     chunk_nodes = rag.build_chunk_nodes(chunks, chunk_embeddings)
@@ -268,6 +289,7 @@ def test_graph_rag_step_methods_and_ingest(tmp_path: Path) -> None:
         )
     )
 
+    assert len(embedder.document_inputs) == 1
     assert document_node.embedding == document_embedding
     assert len(chunk_nodes) == len(chunks)
     assert graph_db.saved_doc_nodes[0].id == document.id
@@ -277,12 +299,13 @@ def test_graph_rag_step_methods_and_ingest(tmp_path: Path) -> None:
     # End-to-end via ingest()
     graph_db = FakeGraphDB()
     extractor = ConcurrencyTrackingExtractor()
+    embedder = FakeEmbedder()
     rag = GraphRAG(
         model="test-model",
         embedding_model="test-embedding",
         db=graph_db,
         max_workers=2,
-        embedding=FakeEmbedder(),
+        embedding=embedder,
         kg_extractor=extractor,
         retrievers=(
             TextRetriever(
@@ -299,9 +322,113 @@ def test_graph_rag_step_methods_and_ingest(tmp_path: Path) -> None:
     assert len(graph_db.saved_chunk_nodes) > 0
     assert len(graph_db.saved_entities) == 1
     assert graph_db.setup_calls[0] is None
-    assert {"__document__", "__chunk__"} == set(graph_db.setup_calls[1])
+    assert graph_db.setup_calls[1] == {"__chunk__": 3}
     assert graph_db.setup_calls[2] == {"__entity__": 3}
+    assert len(embedder.document_inputs) == 1
     assert extractor.maximum <= 2
+
+
+def test_markdown_chunker_uses_file_backed_markdown(tmp_path: Path) -> None:
+    """GraphRAG should process markdown files with the configured MarkdownChunker."""
+
+    input_path = tmp_path / "input.md"
+    input_path.write_text(
+        "# From file\n\n"
+        "Text from disk.\n\n"
+        "```python\n"
+        "print(1)\n"
+        "```\n\n"
+        "| a | b |\n"
+        "| - | - |\n"
+        "| 1 | 2 |\n"
+    )
+    document = Document(
+        id="doc-1",
+        title="In-memory",
+        content="# From memory\n\nThis should not be chunked.",
+    )
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=FakeGraphDB(),
+        embedding=FakeEmbedder(),
+        kg_extractor=ConcurrencyTrackingExtractor(),
+        retrievers=(StaticRetriever([]),),
+        markdown_chunker=MarkdownChunker(tokenizer="character"),
+    )
+
+    chunks = rag.chunk_document(document, input_path)
+
+    assert [chunk.doc_position for chunk in chunks] == [0, 1, 2]
+    assert [chunk.metadata["type"] for chunk in chunks] == ["text", "code", "table"]
+    assert chunks[0].content.startswith("# From file")
+    assert "From memory" not in "\n".join(chunk.content for chunk in chunks)
+    assert chunks[1].content == "print(1)"
+    assert all(chunk.metadata["source_path"] == str(input_path) for chunk in chunks)
+
+
+def test_markdown_chunker_parses_in_memory_markdown_without_path() -> None:
+    """MarkdownChunker should parse document content when no path is supplied."""
+
+    document = Document(
+        id="doc-1",
+        title="Memory markdown",
+        content=(
+            "# In memory\n\n"
+            "Text from memory.\n\n"
+            "```python\n"
+            "print(2)\n"
+            "```\n\n"
+            "| x | y |\n"
+            "| - | - |\n"
+            "| 3 | 4 |\n"
+        ),
+    )
+    chunker = MarkdownChunker(tokenizer="character")
+
+    chunks = chunker.chunk(document)
+
+    assert [chunk.metadata["type"] for chunk in chunks] == ["text", "code", "table"]
+    assert chunks[0].content.startswith("# In memory")
+    assert chunks[1].content == "print(2)"
+    assert "source_path" not in chunks[0].metadata
+
+
+def test_graph_rag_ingest_text_uses_configured_markdown_chunker() -> None:
+    """ingest_text should treat in-memory content as markdown when configured."""
+
+    graph_db = FakeGraphDB()
+    rag = GraphRAG(
+        model="test",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(KnowledgeGraph()),
+        retrievers=(StaticRetriever([]),),
+        markdown_chunker=MarkdownChunker(tokenizer="character"),
+    )
+
+    asyncio.run(
+        rag.ingest_text(
+            "# In-memory markdown\n\n"
+            "Text.\n\n"
+            "```python\n"
+            "print(3)\n"
+            "```\n\n"
+            "| k | v |\n"
+            "| - | - |\n"
+            "| a | b |\n",
+            title="Markdown text",
+        )
+    )
+
+    assert [node.metadata["type"] for node in graph_db.saved_chunk_nodes] == [
+        "text",
+        "code",
+        "table",
+    ]
+    assert graph_db.saved_doc_nodes[0].embedding == []
+    assert graph_db.setup_calls[1] == {"__chunk__": 3}
 
 
 def test_graph_rag_search_uses_configured_retrievers() -> None:
@@ -339,6 +466,29 @@ def test_graph_rag_search_uses_configured_retrievers() -> None:
         [42.0, float(len("machine intelligence")), 7.0],
         5,
     )
+
+
+def test_default_graph_rag_retrievers_do_not_vector_search_documents() -> None:
+    """Default GraphRAG search should not request document vector search."""
+
+    graph_db = FakeGraphDB()
+    rag = GraphRAG(
+        model="test",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=ConcurrencyTrackingExtractor(),
+    )
+    rag._retrievers[1].keyword_extractor = StaticKeywordExtractor(["Turing"])
+
+    asyncio.run(rag.search("machine intelligence", limit=5))
+
+    assert graph_db.vector_calls
+    assert all("__document__" not in labels for labels, _, _ in graph_db.vector_calls)
+    assert [labels for labels, _, _ in graph_db.vector_calls] == [
+        ["__chunk__", "__memory__"],
+        ["__entity__"],
+    ]
 
 
 def test_graph_rag_search_keeps_highest_score_and_distinct_labels() -> None:

@@ -130,6 +130,13 @@ class ChunkNode(Node):
         default_factory=dict,
         description="Additional metadata associated with the chunk.",
     )
+    doc_position: int = Field(
+        default=0,
+        description=(
+            "Position of the chunk within the original document, starting from 0. "
+            "This can be used to reconstruct the original document order or for positional retrieval."
+        ),
+    )
 
     @classmethod
     def from_chunk(cls, chunk: Chunk, *, name: str | None = None) -> "ChunkNode":
@@ -155,6 +162,7 @@ class ChunkNode(Node):
             document_id=chunk.document_id,
             content=chunk.content,
             metadata=dict(chunk.metadata),
+            doc_position=chunk.doc_position,
         )
 
 

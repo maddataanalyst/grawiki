@@ -4,12 +4,18 @@ This guide shows the stepwise ingestion workflow exposed by [`GraphRAG`][grawiki
 
 If you only need the full pipeline, use `await rag.ingest(path)` instead.
 
+When a `markdown_chunker` is configured, `GraphRAG` can use Markdown-aware chunking in two cases:
+
+- file-backed ingestion for `.md` and `.markdown` paths,
+- in-memory ingestion through `ingest_text(...)`, where the text is treated as markdown.
+
 ## Prepare the database and facade
 
 ```python
 from pathlib import Path
 
 from grawiki.db import FalkorGraphDB
+from grawiki.doc_processing.chunkers import MarkdownChunker
 from grawiki.rag import GraphRAG
 
 database = FalkorGraphDB(
@@ -20,6 +26,7 @@ rag = GraphRAG(
     model="openai:gpt-4.1-mini",
     embedding_model="openai:text-embedding-3-small",
     db=database,
+    markdown_chunker=MarkdownChunker(tokenizer="character"),
 )
 
 await database.setup()
@@ -30,7 +37,7 @@ source_path = Path("path/to/document.md")
 
 ```python
 document = rag.read_document(source_path)
-chunks = rag.chunk_document(document)
+chunks = rag.chunk_document(document, source_path)
 document_embedding = await rag.embed_document(document)
 chunk_embeddings = await rag.embed_chunks(chunks)
 
@@ -48,12 +55,23 @@ await rag.persist_entities_and_relationships(
 ## What each step does
 
 1. `read_document(...)` loads the source file into a `Document` model.
-2. `chunk_document(...)` splits the document into `Chunk` models.
-3. `embed_document(...)` and `embed_chunks(...)` create embeddings for later search and indexing.
-4. `build_document_node(...)` and `build_chunk_nodes(...)` convert the transient models into persisted graph-node shapes.
+2. `chunk_document(...)` splits the document into `Chunk` models. With a configured `MarkdownChunker`, markdown files preserve ordered text, code, and table chunks.
+3. `embed_document(...)` returns an empty list during normal ingestion. `embed_chunks(...)` creates the retrieval vectors used for chunk search and indexing.
+4. `build_document_node(...)` and `build_chunk_nodes(...)` convert the transient models into persisted graph-node shapes. Document nodes are written without vector embeddings by default.
 5. `persist_document_and_chunks(...)` writes the document and chunk nodes before extraction.
 6. `extract_kg_per_chunk(...)` produces one extracted graph per chunk.
 7. `persist_entities_and_relationships(...)` writes the extracted entities and relationships back to the graph.
+
+## Ingest markdown already in memory
+
+When you already have markdown text in memory, `ingest_text(...)` follows the same chunking behavior when `markdown_chunker` is configured:
+
+```python
+await rag.ingest_text(
+    "# Notes\n\nThis paragraph becomes a text chunk.\n\n```python\nprint(1)\n```",
+    title="In-memory markdown",
+)
+```
 
 ## One-shot alternative
 

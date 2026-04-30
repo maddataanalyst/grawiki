@@ -611,6 +611,40 @@ def test_vector_search_returns_scored_node_hits(
     assert chunk_hits[0].score > chunk_hits[1].score
 
 
+def test_vector_search_skips_missing_document_index_and_returns_chunk_hits(
+    graph_db: FalkorGraphDB,
+) -> None:
+    """Vector search should keep searching labels that have vector indexes."""
+
+    document_node = DocumentNode(
+        id="doc_no_embedding",
+        semantic_key="document_doc_no_embedding",
+        name="Document without embedding",
+        content="Chunk-level retrieval only.",
+    )
+    chunk_node = ChunkNode(
+        id="chunk_with_embedding",
+        semantic_key="chunk_chunk_with_embedding",
+        name="Chunk with embedding",
+        document_id="doc_no_embedding",
+        content="Chunk vectors remain searchable.",
+        doc_position=0,
+        embedding=[1.0, 0.0, 0.0],
+    )
+    asyncio.run(graph_db.save_docs_and_chunks_to_db([document_node], [chunk_node]))
+
+    hits = asyncio.run(
+        graph_db.vector_search(
+            labels=["__document__", "__chunk__"],
+            query_embedding=[1.0, 0.0, 0.0],
+            limit=5,
+        )
+    )
+
+    assert [hit.node.id for hit in hits] == ["chunk_with_embedding"]
+    assert isinstance(hits[0].node, ChunkNode)
+
+
 def test_list_entities_returns_persisted_entities(
     populated_graph_db: FalkorGraphDB,
 ) -> None:

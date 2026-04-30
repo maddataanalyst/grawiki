@@ -9,9 +9,9 @@ of extraction — the persisted domain model (``Node`` / ``Relationship`` /
 """
 
 import uuid
+import instructor
 
 from pydantic import Field
-from pydantic_ai import Agent
 from typing import Protocol
 
 from grawiki.core.embedding import Embedding
@@ -136,7 +136,8 @@ class KnowledgeGraphExtractor:
     Parameters
     ----------
     model : str
-        Chat model used for structured knowledge extraction.
+        Chat model used for structured knowledge extraction. Passed to
+        :func:`instructor.from_provider` to create the structured-output client.
     embedding : Embedding
         Embedding client used for entity node vectors. Injected so callers share
         one embedding model across the pipeline instead of each component
@@ -152,10 +153,6 @@ class KnowledgeGraphExtractor:
     fix_missing_nodes : bool, optional
         Whether to inject placeholder nodes for relationships that reference
         missing node names.
-    *args
-        Forwarded to :class:`pydantic_ai.Agent`.
-    **kwargs
-        Forwarded to :class:`pydantic_ai.Agent`.
     """
 
     def __init__(
@@ -167,8 +164,6 @@ class KnowledgeGraphExtractor:
         allowed_entity_types: list[str] | None = None,
         allowed_relation_types: list[str] | None = None,
         fix_missing_nodes: bool = True,
-        *args,
-        **kwargs,
     ):
         self.fix_missing_nodes = fix_missing_nodes
         formatted_prompt = prompt.format(
@@ -180,14 +175,19 @@ class KnowledgeGraphExtractor:
             if allowed_relation_types
             else "",
         )
+        self.extraction_prompt = formatted_prompt
+        self.model = model
         self.embedding = embedding
-        self.agent = Agent(
-            model=model,
-            system_prompt=formatted_prompt,
-            output_type=ExtractedKnowledgeGraph,
-            *args,
-            **kwargs,
-        )
+        self._extractor_client = None
+
+    @property
+    def extractor_client(self):
+        """Lazy instructor client initialized on first use."""
+        if self._extractor_client is None:
+            self._extractor_client = instructor.from_provider(
+                self.model, async_client=True
+            )
+        return self._extractor_client
 
     async def extract(self, text: str) -> KnowledgeGraph:
         """Extract a knowledge graph for one text input.
@@ -203,8 +203,19 @@ class KnowledgeGraphExtractor:
             Extracted graph with embedded entity nodes.
         """
 
-        graph = await self.agent.run(text)
-        output_graph = graph.output
+        output_graph = await self.extractor_client.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"{self.extraction_prompt}",
+                },
+                {
+                    "role": "user",
+                    "content": f"Extract a knowledge graph from the following text:\n\n{text}",
+                },
+            ],
+            response_model=ExtractedKnowledgeGraph,
+        )
 
         if self.fix_missing_nodes:
             output_graph = self._fix_missing_nodes(output_graph)

@@ -345,6 +345,7 @@ class FalkorGraphDB(GraphDB):
                         "document_id",
                         "content",
                         "metadata",
+                        "doc_position",
                     ],
                     embedding_literal=embedding_literal,
                 ),

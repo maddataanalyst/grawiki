@@ -24,6 +24,7 @@ classifiers = [
 ]
 dependencies = [
     "chonkie==1.6.3",
+    "instructor==1.15.1",
     "joblib==1.5.3",
     "pandas==3.0.2",
     "pydantic==2.13.3",
@@ -54,7 +55,7 @@ notebooks = [
     "ipykernel==7.2.0",
     "ipywidgets==8.1.8",
     "python-dotenv==1.2.2",
-    "rich==15.0.0",
+    "rich<15.0.0",
     "tqdm==4.67.3",
 ]
 viz = [
@@ -84,7 +85,7 @@ all = [
     "networkx==3.6.1",
     "pymdown-extensions==10.21.2",
     "python-dotenv==1.2.2",
-    "rich==15.0.0",
+    "rich<15.0.0",
     "tqdm==4.67.3",
 ]
 

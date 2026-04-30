@@ -23,6 +23,7 @@ GraWiki focuses on a small end-to-end surface:
 ## Current capabilities
 
 - Read source documents and split them into chunks.
+- Use Markdown-aware chunking for markdown files and in-memory markdown text when configured.
 - Extract entities and relationships from chunk text.
 - Persist documents, chunks, entities, and edges in a graph database.
 - Retrieve graph-backed context with full-text and vector search.
