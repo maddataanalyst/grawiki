@@ -12,7 +12,7 @@ import uuid
 import instructor
 
 from pydantic import Field
-from typing import Protocol
+from typing import Any, Protocol
 
 from grawiki.core.embedding import Embedding
 from grawiki.graph.prompts import KG_EXTRACTION_PROMPT
@@ -47,15 +47,16 @@ class ExtractedNode(GraphModel):
     )
     name: str = Field(
         description=(
-            "Human-readable node name used as the temporary reference key "
-            "within one extraction result."
+            "Human-readable node name in the configured output language, "
+            "used as the temporary reference key within one extraction result."
         )
     )
     semantic_key: str = Field(
         description=(
-            "A key constructed as the concatenation of node label and shortened name, "
-            "used to identify nodes with the same label and name across the graph. "
-            "Should be very short and brief. Example: person_alan-turing, code-snippet_llm-implementation."
+            "A short ASCII-friendly key constructed as the concatenation of "
+            "node label and shortened name, used to identify nodes with the "
+            "same label and name across the graph. Example: "
+            "person_alan-turing, code-snippet_llm-implementation."
         )
     )
     properties: dict[str, str] = Field(
@@ -80,8 +81,9 @@ class ExtractedRelationship(GraphModel):
     )
     label: str = Field(
         description=(
-            "Relationship type expressed as a short verb-like connector "
-            "such as 'invented' or 'located_in'."
+            "Relationship type expressed as a short verb-like connector in "
+            "the configured output language, such as 'invented' or "
+            "'located_in'."
         )
     )
     properties: dict[str, str] = Field(
@@ -146,6 +148,9 @@ class KnowledgeGraphExtractor:
         Extraction prompt template.
     max_triplets : int, optional
         Maximum number of triplets requested from the model.
+    output_language : str, optional
+        Language used for extracted node names, relationship labels, and
+        textual properties. Defaults to ``"English"``.
     allowed_entity_types : list[str] | None, optional
         Optional entity label allow-list.
     allowed_relation_types : list[str] | None, optional
@@ -153,6 +158,10 @@ class KnowledgeGraphExtractor:
     fix_missing_nodes : bool, optional
         Whether to inject placeholder nodes for relationships that reference
         missing node names.
+    extract_kwargs : dict[str, Any] | None, optional
+        Extra keyword arguments forwarded to the instructor ``create`` call.
+        Useful for provider-specific options such as ``reasoning_effort`` or
+        ``max_retries``.
     """
 
     def __init__(
@@ -161,13 +170,19 @@ class KnowledgeGraphExtractor:
         embedding: Embedding,
         prompt: str = KG_EXTRACTION_PROMPT,
         max_triplets: int = 5,
+        output_language: str = "English",
         allowed_entity_types: list[str] | None = None,
         allowed_relation_types: list[str] | None = None,
         fix_missing_nodes: bool = True,
-    ):
+        extract_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Initialize the knowledge graph extractor."""
+
         self.fix_missing_nodes = fix_missing_nodes
+        self.output_language = output_language
         formatted_prompt = prompt.format(
             max_triplets=max_triplets,
+            output_language=output_language,
             allowed_entity_types=", ".join(allowed_entity_types)
             if allowed_entity_types
             else "",
@@ -178,6 +193,7 @@ class KnowledgeGraphExtractor:
         self.extraction_prompt = formatted_prompt
         self.model = model
         self.embedding = embedding
+        self._extract_kwargs = extract_kwargs or {}
         self._extractor_client = None
 
     @property
@@ -215,6 +231,7 @@ class KnowledgeGraphExtractor:
                 },
             ],
             response_model=ExtractedKnowledgeGraph,
+            **self._extract_kwargs,
         )
 
         if self.fix_missing_nodes:

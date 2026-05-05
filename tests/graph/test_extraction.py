@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from grawiki.graph.extraction import (
     ExtractedKnowledgeGraph,
@@ -28,6 +29,18 @@ class FakeEmbedder:
         )
 
 
+class FakeExtractorClient:
+    """Structured-output client stub that records extractor requests."""
+
+    def __init__(self, result: ExtractedKnowledgeGraph) -> None:
+        self.result = result
+        self.calls: list[dict[str, Any]] = []
+
+    async def create(self, **kwargs: Any) -> ExtractedKnowledgeGraph:
+        self.calls.append(kwargs)
+        return self.result
+
+
 def test_build_knowledge_graph_embeds_entities() -> None:
     """Entity nodes should receive concrete list embeddings, not coroutine objects."""
 
@@ -50,3 +63,41 @@ def test_build_knowledge_graph_embeds_entities() -> None:
     assert built_graph.nodes[0].embedding == [1.0, 1.0, 2.0]
     assert built_graph.nodes[0].labels == frozenset({"Person"})
     assert isinstance(built_graph.nodes[0].embedding, list)
+
+
+def test_extractor_defaults_to_english_output_language() -> None:
+    """The default extraction prompt should request English graph strings."""
+
+    extractor = KnowledgeGraphExtractor(model="test-model", embedding=FakeEmbedder())
+
+    assert extractor.output_language == "English"
+    assert "in English" in extractor.extraction_prompt
+
+
+def test_extract_uses_configured_output_language_and_extract_kwargs() -> None:
+    """extract() should send the configured language prompt and API kwargs."""
+
+    extractor = KnowledgeGraphExtractor(
+        model="test-model",
+        embedding=FakeEmbedder(),
+        output_language="Polish",
+        extract_kwargs={"reasoning_effort": "minimal"},
+    )
+    client = FakeExtractorClient(ExtractedKnowledgeGraph())
+    extractor._extractor_client = client
+
+    built_graph = asyncio.run(
+        extractor.extract("Marie Curie received the Nobel Prize in Chemistry.")
+    )
+
+    assert built_graph.nodes == []
+    assert built_graph.relationships == []
+    assert len(client.calls) == 1
+    call = client.calls[0]
+    assert call["response_model"] is ExtractedKnowledgeGraph
+    assert call["reasoning_effort"] == "minimal"
+    assert call["messages"][0]["role"] == "system"
+    assert "in Polish" in call["messages"][0]["content"]
+    assert call["messages"][1]["content"].endswith(
+        "Marie Curie received the Nobel Prize in Chemistry."
+    )

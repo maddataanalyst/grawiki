@@ -2,7 +2,16 @@
 
 [`GraphRAG`][grawiki.rag.graph_rag.GraphRAG] is the main public facade. It combines document ingestion, chunk-level graph extraction, retrieval, agent-memory persistence, and duplicate-entity inspection in one class.
 
-When constructed with a `markdown_chunker`, the ingestion helpers use Markdown-aware chunking for `.md` and `.markdown` files and for `ingest_text(...)`. In the default ingestion flow, vector embeddings are created for chunks, entities, memories, and queries, while document nodes are persisted without document-level vectors.
+`GraphRAG` always keeps the generic text chunker ready and can optionally add a markdown-aware pipeline path:
+
+- the generic text `Chunker` for plain-text content,
+- an explicit markdown pipeline adapter for markdown content when `markdown_pipeline=` is provided.
+
+`read_document(...)` is the only file-format detection step. It marks `.md` and `.markdown` files as markdown content, converts `.pdf` files to markdown in memory, and leaves other files as plain text. `ingest_text(...)` does not auto-detect content; callers choose `format="text"` or `format="markdown"` explicitly. Both `ingest(...)` and `ingest_text(...)` then run the same private ingestion flow for chunking, optional `process_chunks(...)`, embedding, persistence, and extraction.
+
+When you pass `chunk_processors=` to `GraphRAG(...)`, those processors run after chunking and before chunk embeddings and chunk-level graph extraction.
+
+In the default ingestion flow, vector embeddings are created for chunks, entities, memories, and queries, while document nodes are persisted without document-level vectors.
 
 The main entry points are:
 

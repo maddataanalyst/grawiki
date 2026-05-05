@@ -51,7 +51,7 @@ Shared source-data models and embedding abstractions.
 Document loading and chunking utilities.
 
 - `doc_processing/document_processing.py`: source document reading and chunking entry helpers.
-- `doc_processing/chunkers.py`: strategy wrapper around `chonkie` for `fast`, `recursive`, `semantic`, `sentence`, and `token` chunking, plus a MarkdownChef-backed `MarkdownChunker` for markdown files and in-memory markdown text.
+- `doc_processing/chunkers.py`: strategy wrapper around `chonkie` for `fast`, `recursive`, `semantic`, `sentence`, and `token` chunking, plus an optional pipeline-backed markdown adapter that can merge prose, code, and table regions into one ordered stream when callers explicitly opt in.
 
 ### `grawiki.graph`
 
@@ -96,7 +96,7 @@ High-level RAG facade.
 ## How the pieces fit together
 
 1. `grawiki.rag.GraphRAG` orchestrates the user-facing flows.
-2. `grawiki.doc_processing` reads and chunks source material, including Markdown-aware text/code/table chunking when configured.
+2. `grawiki.doc_processing` reads and chunks source material, including format normalization, PDF-to-markdown conversion, generic text chunking, and optional markdown-aware text/code/table chunking.
 3. `grawiki.graph.extraction` turns chunk text into graph structure.
 4. `grawiki.db` persists nodes, relationships, memories, and search indexes.
 5. `grawiki.retrieval` handles query-time embedding and graph-context retrieval.

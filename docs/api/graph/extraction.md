@@ -14,10 +14,13 @@ from grawiki.graph.extraction import KnowledgeGraphExtractor
 extractor = KnowledgeGraphExtractor(
     model="openai:gpt-4.1-mini",
     embedding=embedder,
+    output_language="Polish",
 )
 graph = await extractor.extract("Alan Turing was a pioneering computer scientist.")
 ```
 
 The resulting `graph` is a `KnowledgeGraph` whose nodes already carry embeddings and durable UUIDs, ready for persistence.
+
+When `output_language` is omitted, `KnowledgeGraphExtractor` defaults to English for extracted entity names, relationship labels, and textual properties.
 
 ::: grawiki.graph.extraction

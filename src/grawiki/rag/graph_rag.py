@@ -7,15 +7,20 @@ import logging
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
+from chonkie import Pipeline
 from pydantic_ai import Embedder
 
 from grawiki.core.commons import Chunk, Document
 from grawiki.core.embedding import Embedding
 from grawiki.db.base import GraphDB, NeighborRelationship, NodeHit
-from grawiki.doc_processing.chunkers import Chunker, MarkdownChunker
+from grawiki.doc_processing.chunkers import (
+    Chunker,
+    MarkdownPipelineChunker,
+)
 from grawiki.doc_processing.document_processing import chunk_document, read_document
+from grawiki.doc_processing.chunk_processors import ChunkProcessor
 from grawiki.graph.extraction import (
     KnowledgeGraphExtractor,
     KnowledgeGraphExtractorProtocol,
@@ -49,6 +54,12 @@ MEMORY_RELATED_LABEL = "__related__"
 class GraphRAG:
     """Orchestrate document ingestion and retrieval-augmented search.
 
+    The stepwise ingestion helpers exposed for notebooks and debugging are
+    `read_document(...)`, `chunk_document(...)`, `process_chunks(...)`,
+    `embed_document(...)`, `embed_chunks(...)`, `build_document_node(...)`,
+    `build_chunk_nodes(...)`, `persist_document_and_chunks(...)`,
+    `extract_kg_per_chunk(...)`, and `persist_entities_and_relationships(...)`.
+
     Parameters
     ----------
     model : str
@@ -59,15 +70,28 @@ class GraphRAG:
         Graph database adapter used for persistence and search.
     chunking_strategy : str, optional
         Chunking strategy passed to :class:`~grawiki.doc_processing.chunkers.Chunker`.
-    markdown_chunker : MarkdownChunker | None, optional
-        Dedicated markdown-aware chunker used for ``.md`` / ``.markdown`` files
-        and in-memory text ingestion when configured.
+    chunk_processors : list[ChunkProcessor] | None, optional
+        Optional chunk-level processing steps applied after chunking and before
+        embedding and graph extraction. Useful for enrichment or normalization
+        tasks such as question generation, entity anonymization, or metadata injection.
+    markdown_pipeline : Pipeline | None, optional
+        Optional markdown-aware pipeline used for markdown content. When
+        omitted, markdown falls back to the generic text chunker.
     max_workers : int, optional
         Maximum number of concurrent chunk-level extraction coroutines.
     embedding : Embedding | None, optional
         Embedding override for tests or debugging.
     kg_extractor : KnowledgeGraphExtractorProtocol | None, optional
         Knowledge graph extractor override for tests or debugging.
+    kg_output_language : str, optional
+        Language used by the default knowledge graph extractor for entity
+        names, relationship labels, and textual properties. Defaults to
+        ``"English"``.
+    kg_extractor_kwargs : dict[str, Any] | None, optional
+        Extra keyword arguments forwarded to the default extractor's
+        ``instructor.create(...)`` call when ``kg_extractor`` is omitted.
+        Useful for provider-specific options such as ``reasoning_effort`` or
+        ``max_retries``.
     similarity_finder : EntitySimilarityFinder | None, optional
         Entity similarity finder used for collision inspection and candidate
         lookup. Defaults to a finder backed by the vector similarity matcher.
@@ -92,10 +116,13 @@ class GraphRAG:
         chunking_strategy: Literal[
             "fast", "recursive", "semantic", "sentence", "token"
         ] = "sentence",
-        markdown_chunker: MarkdownChunker | None = None,
+        chunk_processors: list[ChunkProcessor] | None = None,
+        markdown_pipeline: Pipeline | None = None,
         max_workers: int = 4,
         embedding: Embedding | None = None,
         kg_extractor: KnowledgeGraphExtractorProtocol | None = None,
+        kg_output_language: str = "English",
+        kg_extractor_kwargs: dict[str, Any] | None = None,
         retrievers: tuple[Retriever, ...] | None = None,
         similarity_finder: EntitySimilarityFinder | None = None,
         resolve_entities_on_ingest: bool = False,
@@ -113,14 +140,28 @@ class GraphRAG:
             Graph database adapter used for persistence and search.
         chunking_strategy : {"fast", "recursive", "semantic", "sentence", "token"}, optional
             Chunking strategy used by the internal :class:`~grawiki.doc_processing.chunkers.Chunker`.
-        markdown_chunker : MarkdownChunker | None, optional
-            Dedicated markdown-aware chunker used when the document appears to be markdown.
+        chunk_processors : list[ChunkProcessor] | None, optional
+            Optional chunk-level processing steps applied after chunking and before
+            embedding and graph extraction. Useful for enrichment or normalization
+            tasks such as question generation, entity anonymization, or metadata
+            injection.
+        markdown_pipeline : Pipeline | None, optional
+            Optional markdown-aware pipeline used whenever the document content
+            format is ``"markdown"``. When omitted, markdown falls back to the
+            generic text chunker.
         max_workers : int, optional
             Maximum number of concurrent chunk-level extraction coroutines.
         embedding : Embedding | None, optional
             Embedding override for tests, notebooks, or alternate deployments.
         kg_extractor : KnowledgeGraphExtractorProtocol | None, optional
             Knowledge graph extractor override for tests or debugging.
+        kg_output_language : str, optional
+            Language used by the default knowledge graph extractor for entity
+            names, relationship labels, and textual properties. Defaults to
+            ``"English"``.
+        kg_extractor_kwargs : dict[str, Any] | None, optional
+            Extra keyword arguments forwarded to the default extractor's
+            ``instructor.create(...)`` call when ``kg_extractor`` is omitted.
         retrievers : tuple[Retriever, ...] | None, optional
             Retrieval strategies used by :meth:`search`.
         similarity_finder : EntitySimilarityFinder | None, optional
@@ -148,12 +189,19 @@ class GraphRAG:
         self.max_workers = max_workers
         self._db = db
         self._chunker = Chunker(strategy=chunking_strategy)
-        self._markdown_chunker = markdown_chunker
+        self._chunk_processors = chunk_processors or []
+        self._markdown_chunker = (
+            MarkdownPipelineChunker(markdown_pipeline)
+            if markdown_pipeline is not None
+            else None
+        )
         self._max_workers = max_workers
         self._embedding = embedding or Embedder(embedding_model)
         self._extractor = kg_extractor or KnowledgeGraphExtractor(
             model=model,
             embedding=self._embedding,
+            output_language=kg_output_language,
+            extract_kwargs=kg_extractor_kwargs,
         )
         self._entity_similarity = similarity_finder or EntitySimilarityFinder(db=db)
         self.resolve_entities_on_ingest = resolve_entities_on_ingest
@@ -196,7 +244,7 @@ class GraphRAG:
     def chunk_document(
         self,
         document: Document,
-        path: Path | None = None,
+        format: Literal["text", "markdown"] | None = None,
     ) -> list[Chunk]:
         """Split a document into chunks.
 
@@ -204,30 +252,63 @@ class GraphRAG:
         ----------
         document : Document
             Source document to segment.
-        path : Path | None, optional
-            Filesystem path to the source document. MarkdownChef is used when a
-            markdown chunker is configured and the path suffix is ``.md`` or
-            ``.markdown``. When no path is available, configured markdown
-            chunking is used for in-memory text.
+        format : {"text", "markdown"} | None, optional
+            Explicit content-format override. When omitted, the method uses
+            ``document.metadata["content_format"]`` and falls back to ``"text"``.
 
         Returns
         -------
         list[Chunk]
-            Chunk sequence produced by the configured chunker.
+            Chunk sequence produced by the configured chunker. Markdown content
+            uses the markdown pipeline only when one was configured explicitly.
         """
 
         logger.info("Chunking document %s", document.id)
-        is_markdown_path = path is not None and path.suffix.lower() in {
-            ".md",
-            ".markdown",
-        }
-        if self._markdown_chunker and (path is None or is_markdown_path):
-            logger.info("Using dedicated markdown chunker for document %s", document.id)
-            chunks = self._markdown_chunker.chunk(document, source_path=path)
-        else:
+        content_format = format or document.metadata.get("content_format", "text")
+
+        if content_format == "markdown" and self._markdown_chunker is not None:
+            logger.info(
+                "Using configured markdown pipeline chunker for document %s",
+                document.id,
+            )
+            chunks = self._markdown_chunker.chunk(document)
+        elif content_format in {"text", "markdown"}:
+            if content_format == "markdown":
+                logger.info(
+                    "No markdown pipeline configured; using generic chunker for "
+                    "document %s",
+                    document.id,
+                )
             chunks = chunk_document(document, self._chunker)
+        else:
+            raise ValueError(
+                "Unsupported document content format "
+                f"{content_format!r} for document {document.id}."
+            )
         logger.info("Created %s chunks for document %s", len(chunks), document.id)
         return chunks
+
+    async def process_chunks(self, chunks: list[Chunk]) -> list[Chunk]:
+        """Apply configured chunk processors in sequence.
+
+        Parameters
+        ----------
+        chunks : list[Chunk]
+            Chunks to process.
+
+        Returns
+        -------
+        list[Chunk]
+            Processed chunks in the same order as the input sequence.
+        """
+
+        if not chunks:
+            return []
+
+        processed_chunks = list(chunks)
+        for processor in self._chunk_processors:
+            processed_chunks = [await processor(chunk) for chunk in processed_chunks]
+        return processed_chunks
 
     async def embed_document(self, document: Document) -> list[float]:
         """Return no document-level embedding for ingestion.
@@ -352,7 +433,10 @@ class GraphRAG:
         await self._db.save_docs_and_chunks_to_db([document_node], chunk_nodes)
 
     async def extract_kg_per_chunk(
-        self, chunks: list[Chunk]
+        self,
+        chunks: list[Chunk],
+        *,
+        show_progress: bool = False,
     ) -> dict[str, KnowledgeGraph]:
         """Extract knowledge graphs for chunks with bounded concurrency.
 
@@ -360,6 +444,10 @@ class GraphRAG:
         ----------
         chunks : list[Chunk]
             Chunks to analyze.
+        show_progress : bool, optional
+            When ``True``, emit info-level log messages as chunk extraction
+            starts, each chunk finishes, and the overall extraction completes.
+            Defaults to ``False``.
 
         Returns
         -------
@@ -381,8 +469,31 @@ class GraphRAG:
                 graph = await self._extractor.extract(chunk.content)
                 return chunk.id, graph
 
-        results = await asyncio.gather(*(extract_one(c) for c in chunks))
-        return dict(results)
+        tasks = [asyncio.create_task(extract_one(chunk)) for chunk in chunks]
+        chunk_graphs: dict[str, KnowledgeGraph] = {}
+        completed_count = 0
+
+        try:
+            for task in asyncio.as_completed(tasks):
+                chunk_id, graph = await task
+                chunk_graphs[chunk_id] = graph
+                completed_count += 1
+                if show_progress:
+                    logger.info(
+                        "Extracted KG for chunk %s/%s",
+                        completed_count,
+                        len(chunks),
+                    )
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+        if show_progress:
+            logger.info("Completed KG extraction for %s chunks", len(chunks))
+        return chunk_graphs
 
     async def persist_entities_and_relationships(
         self,
@@ -689,13 +800,16 @@ class GraphRAG:
     # High-level operations
     # ------------------------------------------------------------------
 
-    async def ingest(self, path: Path) -> None:
+    async def ingest(self, path: Path, *, show_progress: bool = False) -> None:
         """Run the full ingestion flow for one file.
 
         Parameters
         ----------
         path : Path
             Source file to ingest.
+        show_progress : bool, optional
+            When ``True``, emit info-level progress logs for chunk-level
+            knowledge-graph extraction during ingestion. Defaults to ``False``.
 
         Returns
         -------
@@ -705,23 +819,19 @@ class GraphRAG:
         """
 
         logger.info("Starting ingestion for %s", path)
-        await self._db.setup()
         document = self.read_document(path)
-        chunks = self.chunk_document(document, path)
-        chunk_embeddings = await self.embed_chunks(chunks)
-        document_node = self.build_document_node(document, [])
-        chunk_nodes = self.build_chunk_nodes(chunks, chunk_embeddings)
-        await self.persist_document_and_chunks(document_node, chunk_nodes)
-        chunk_graphs = await self.extract_kg_per_chunk(chunks)
-        if self.resolve_entities_on_ingest:
-            chunk_graphs = await self._resolve_extracted_entities(chunk_graphs)
-        await self.persist_entities_and_relationships(
-            [chunk.id for chunk in chunks],
-            chunk_graphs,
-        )
+        await self._ingest_document(document, show_progress=show_progress)
         logger.info("Completed ingestion for %s", path)
 
-    async def ingest_text(self, text: str, title: str) -> None:
+    async def ingest_text(
+        self,
+        text: str,
+        title: str,
+        *,
+        format: Literal["text", "markdown"] = "text",
+        metadata: dict[str, str] | None = None,
+        show_progress: bool = False,
+    ) -> None:
         """Ingest a document supplied as a string.
 
         Parameters
@@ -730,6 +840,15 @@ class GraphRAG:
             Document content to ingest.
         title : str
             Human-readable document title used as the document name.
+        format : {"text", "markdown"}, optional
+            Explicit content format for the in-memory document. Defaults to
+            ``"text"`` and is not auto-detected.
+        metadata : dict[str, str] | None, optional
+            Additional metadata attached to the transient source document before
+            persistence.
+        show_progress : bool, optional
+            When ``True``, emit info-level progress logs for chunk-level
+            knowledge-graph extraction during ingestion. Defaults to ``False``.
 
         Returns
         -------
@@ -738,22 +857,63 @@ class GraphRAG:
             configured database.
         """
 
-        document = Document(id=str(uuid.uuid4()), title=title, content=text)
+        document_metadata = dict(metadata or {})
+        document_metadata["source_format"] = format
+        document_metadata["content_format"] = format
+        document = Document(
+            id=str(uuid.uuid4()),
+            title=title,
+            content=text,
+            metadata=document_metadata,
+        )
         logger.info("Starting ingestion for text document %r", title)
+        await self._ingest_document(
+            document,
+            format=format,
+            show_progress=show_progress,
+        )
+        logger.info("Completed ingestion for text document %r", title)
+
+    async def _ingest_document(
+        self,
+        document: Document,
+        *,
+        format: Literal["text", "markdown"] | None = None,
+        show_progress: bool = False,
+    ) -> None:
+        """Run the shared ingestion flow for a normalized document.
+
+        Parameters
+        ----------
+        document : Document
+            Source document normalized for ingestion.
+        format : {"text", "markdown"} | None, optional
+            Explicit content-format override propagated to chunking.
+        show_progress : bool, optional
+            When ``True``, emit info-level progress logs for chunk-level
+            knowledge-graph extraction. Defaults to ``False``.
+        """
+
+        if format is not None:
+            document.metadata["content_format"] = format
+
         await self._db.setup()
-        chunks = self.chunk_document(document)
+        chunks = self.chunk_document(document, format=format)
+        chunks = await self.process_chunks(chunks)
         chunk_embeddings = await self.embed_chunks(chunks)
         document_node = self.build_document_node(document, [])
         chunk_nodes = self.build_chunk_nodes(chunks, chunk_embeddings)
         await self.persist_document_and_chunks(document_node, chunk_nodes)
-        chunk_graphs = await self.extract_kg_per_chunk(chunks)
+        chunk_graphs = await self.extract_kg_per_chunk(
+            chunks,
+            show_progress=show_progress,
+        )
         if self.resolve_entities_on_ingest:
             chunk_graphs = await self._resolve_extracted_entities(chunk_graphs)
         await self.persist_entities_and_relationships(
             [chunk.id for chunk in chunks],
             chunk_graphs,
         )
-        logger.info("Completed ingestion for text document %r", title)
 
     async def remember(
         self,

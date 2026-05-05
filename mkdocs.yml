@@ -21,6 +21,7 @@ nav:
       - Deduplicate Entities: how-to/deduplicate-entities.md
       - Store and Recall Memory: how-to/store-and-recall-memory.md
       - Visualize a Graph: how-to/visualize-a-graph.md
+      - Tips & Tricks: how-to/tips-and-tricks.md
   - Project Structure: structure.md
   - API:
       - API Overview: api/index.md

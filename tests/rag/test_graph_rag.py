@@ -3,20 +3,35 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 import pytest
+from chonkie import Pipeline
 
-from grawiki.core.commons import Document
+from grawiki.core.commons import Chunk, Document
 from grawiki.db.base import GraphDB, NeighborRelationship, NodeHit
+from grawiki.doc_processing import document_processing
+from grawiki.doc_processing.chunkers import MarkdownPipelineChunker
+from grawiki.doc_processing.document_processing import read_document
+from grawiki.graph.extraction import KnowledgeGraphExtractor
 from grawiki.graph.models import KnowledgeGraph, MemoryNode, Node, Relationship
-from grawiki.doc_processing.chunkers import MarkdownChunker
 from grawiki.rag.graph_rag import GraphRAG
 from grawiki.retrieval.text import TextRetriever
 from grawiki.similarity.deduplication import MergeReport
 from grawiki.similarity.fuzzy import RapidFuzzEntitySimilarityMatcher
 from grawiki.similarity.similarity_finder import EntitySimilarityFinder
+
+
+def build_markdown_pipeline(*, chunk_size: int = 4096) -> Pipeline:
+    """Return a deterministic markdown pipeline for tests."""
+
+    return (
+        Pipeline()
+        .process_with("markdown")
+        .chunk_with("token", tokenizer="character", chunk_size=chunk_size)
+    )
 
 
 class FakeEmbeddingResult:
@@ -245,6 +260,106 @@ class ConcurrencyTrackingExtractor:
         )
 
 
+class ProgressTrackingExtractor:
+    """Extractor stub that completes chunks out of input order."""
+
+    async def extract(self, text: str) -> KnowledgeGraph:
+        await asyncio.sleep(float(text))
+        return KnowledgeGraph(
+            nodes=[
+                Node(
+                    id=f"node_{text}",
+                    label="Concept",
+                    semantic_key=f"concept_{text}",
+                    name=f"Concept {text}",
+                )
+            ]
+        )
+
+
+class CancelTrackingFailingExtractor:
+    """Extractor stub that fails once and records cancellation of other work."""
+
+    def __init__(self) -> None:
+        self.started: list[str] = []
+        self.cancelled: list[str] = []
+
+    async def extract(self, text: str) -> KnowledgeGraph:
+        self.started.append(text)
+        if text == "fail":
+            await asyncio.sleep(0)
+            raise RuntimeError("chunk extraction failed")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled.append(text)
+            raise
+
+
+class RecordingExtractor:
+    """Extractor stub that records every chunk text it receives."""
+
+    def __init__(self, graph: KnowledgeGraph | None = None) -> None:
+        self._graph = graph or KnowledgeGraph()
+        self.texts: list[str] = []
+
+    async def extract(self, text: str) -> KnowledgeGraph:
+        self.texts.append(text)
+        return self._graph
+
+
+class PrefixingProcessor:
+    """Chunk processor stub that prepends a deterministic marker."""
+
+    def __init__(
+        self, prefix: str, call_log: list[tuple[str, str]] | None = None
+    ) -> None:
+        self.prefix = prefix
+        self.call_log = call_log
+
+    async def __call__(self, chunk: Chunk) -> Chunk:
+        if self.call_log is not None:
+            self.call_log.append((self.prefix, chunk.id))
+        return chunk.model_copy(
+            update={
+                "content": f"{self.prefix}{chunk.content}",
+                "metadata": dict(chunk.metadata),
+            }
+        )
+
+
+def build_chunks(*contents: str) -> list[Chunk]:
+    """Create deterministic test chunks from raw text contents."""
+
+    return [
+        Chunk(
+            id=f"chunk_{index}",
+            document_id="document_1",
+            content=content,
+            doc_position=index,
+        )
+        for index, content in enumerate(contents, start=1)
+    ]
+
+
+def test_graph_rag_default_extractor_accepts_language_configuration() -> None:
+    """GraphRAG should pass language and API kwargs into the default extractor."""
+
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=FakeGraphDB(),
+        embedding=FakeEmbedder(),
+        kg_output_language="Polish",
+        kg_extractor_kwargs={"reasoning_effort": "minimal"},
+        retrievers=(StaticRetriever([]),),
+    )
+
+    assert isinstance(rag._extractor, KnowledgeGraphExtractor)
+    assert rag._extractor.output_language == "Polish"
+    assert rag._extractor._extract_kwargs == {"reasoning_effort": "minimal"}
+
+
 def test_graph_rag_step_methods_and_ingest(tmp_path: Path) -> None:
     """GraphRAG should expose modular public steps and end-to-end ingestion."""
 
@@ -275,6 +390,7 @@ def test_graph_rag_step_methods_and_ingest(tmp_path: Path) -> None:
 
     document = rag.read_document(input_path)
     chunks = rag.chunk_document(document)
+    chunks = asyncio.run(rag.process_chunks(chunks))
     document_embedding = asyncio.run(rag.embed_document(document))
     assert document_embedding == []
     assert embedder.document_inputs == []
@@ -328,74 +444,220 @@ def test_graph_rag_step_methods_and_ingest(tmp_path: Path) -> None:
     assert extractor.maximum <= 2
 
 
-def test_markdown_chunker_uses_file_backed_markdown(tmp_path: Path) -> None:
-    """GraphRAG should process markdown files with the configured MarkdownChunker."""
+def test_graph_rag_process_chunks_executes_processors_in_order() -> None:
+    """Configured chunk processors should run sequentially and preserve order."""
 
-    input_path = tmp_path / "input.md"
-    input_path.write_text(
-        "# From file\n\n"
-        "Text from disk.\n\n"
-        "```python\n"
-        "print(1)\n"
-        "```\n\n"
-        "| a | b |\n"
-        "| - | - |\n"
-        "| 1 | 2 |\n"
-    )
-    document = Document(
-        id="doc-1",
-        title="In-memory",
-        content="# From memory\n\nThis should not be chunked.",
-    )
+    graph_db = FakeGraphDB()
+    call_log: list[tuple[str, str]] = []
     rag = GraphRAG(
         model="test-model",
         embedding_model="test-embedding",
-        db=FakeGraphDB(),
+        db=graph_db,
         embedding=FakeEmbedder(),
-        kg_extractor=ConcurrencyTrackingExtractor(),
+        kg_extractor=StaticExtractor(KnowledgeGraph()),
         retrievers=(StaticRetriever([]),),
-        markdown_chunker=MarkdownChunker(tokenizer="character"),
+        chunk_processors=[
+            PrefixingProcessor("first:", call_log),
+            PrefixingProcessor("second:", call_log),
+        ],
     )
 
-    chunks = rag.chunk_document(document, input_path)
+    processed = asyncio.run(rag.process_chunks(build_chunks("alpha", "beta")))
 
-    assert [chunk.doc_position for chunk in chunks] == [0, 1, 2]
-    assert [chunk.metadata["type"] for chunk in chunks] == ["text", "code", "table"]
-    assert chunks[0].content.startswith("# From file")
-    assert "From memory" not in "\n".join(chunk.content for chunk in chunks)
-    assert chunks[1].content == "print(1)"
-    assert all(chunk.metadata["source_path"] == str(input_path) for chunk in chunks)
+    assert [chunk.content for chunk in processed] == [
+        "second:first:alpha",
+        "second:first:beta",
+    ]
+    assert call_log == [
+        ("first:", "chunk_1"),
+        ("first:", "chunk_2"),
+        ("second:", "chunk_1"),
+        ("second:", "chunk_2"),
+    ]
 
 
-def test_markdown_chunker_parses_in_memory_markdown_without_path() -> None:
-    """MarkdownChunker should parse document content when no path is supplied."""
+def test_graph_rag_ingest_text_uses_processed_chunk_content_everywhere() -> None:
+    """Chunk processor output should drive embedding, persistence, and extraction."""
+
+    graph_db = FakeGraphDB()
+    embedder = FakeEmbedder()
+    extractor = RecordingExtractor()
+    rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=embedder,
+        kg_extractor=extractor,
+        retrievers=(StaticRetriever([]),),
+        chunk_processors=[PrefixingProcessor("processed: ")],
+    )
+
+    asyncio.run(rag.ingest_text("Alpha.", title="Processed"))
+
+    assert len(embedder.document_inputs) == 1
+    assert embedder.document_inputs[0] == extractor.texts
+    assert [node.content for node in graph_db.saved_chunk_nodes] == extractor.texts
+    assert extractor.texts == ["processed: Alpha."]
+
+
+def test_graph_rag_stepwise_process_chunks_matches_one_shot_ingestion() -> None:
+    """Explicit stepwise ingestion should match the one-shot processing flow."""
+
+    one_shot_db = FakeGraphDB()
+    one_shot_embedder = FakeEmbedder()
+    one_shot_extractor = RecordingExtractor()
+    one_shot_rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=one_shot_db,
+        embedding=one_shot_embedder,
+        kg_extractor=one_shot_extractor,
+        retrievers=(StaticRetriever([]),),
+        chunk_processors=[PrefixingProcessor("processed: ")],
+    )
+
+    stepwise_db = FakeGraphDB()
+    stepwise_embedder = FakeEmbedder()
+    stepwise_extractor = RecordingExtractor()
+    stepwise_rag = GraphRAG(
+        model="test-model",
+        embedding_model="test-embedding",
+        db=stepwise_db,
+        embedding=stepwise_embedder,
+        kg_extractor=stepwise_extractor,
+        retrievers=(StaticRetriever([]),),
+        chunk_processors=[PrefixingProcessor("processed: ")],
+    )
+
+    asyncio.run(one_shot_rag.ingest_text("Alpha.", title="Processed"))
 
     document = Document(
         id="doc-1",
-        title="Memory markdown",
-        content=(
-            "# In memory\n\n"
-            "Text from memory.\n\n"
-            "```python\n"
-            "print(2)\n"
-            "```\n\n"
-            "| x | y |\n"
-            "| - | - |\n"
-            "| 3 | 4 |\n"
-        ),
+        title="Processed",
+        content="Alpha.",
+        metadata={"source_format": "text", "content_format": "text"},
     )
-    chunker = MarkdownChunker(tokenizer="character")
+    asyncio.run(stepwise_db.setup())
+    chunks = stepwise_rag.chunk_document(document)
+    chunks = asyncio.run(stepwise_rag.process_chunks(chunks))
+    document_embedding = asyncio.run(stepwise_rag.embed_document(document))
+    chunk_embeddings = asyncio.run(stepwise_rag.embed_chunks(chunks))
+    document_node = stepwise_rag.build_document_node(document, document_embedding)
+    chunk_nodes = stepwise_rag.build_chunk_nodes(chunks, chunk_embeddings)
+    asyncio.run(stepwise_rag.persist_document_and_chunks(document_node, chunk_nodes))
+    chunk_graphs = asyncio.run(stepwise_rag.extract_kg_per_chunk(chunks))
+    asyncio.run(
+        stepwise_rag.persist_entities_and_relationships(
+            [chunk.id for chunk in chunks],
+            chunk_graphs,
+        )
+    )
 
-    chunks = chunker.chunk(document)
+    assert one_shot_db.setup_calls == stepwise_db.setup_calls
+    assert one_shot_embedder.document_inputs == stepwise_embedder.document_inputs
+    assert one_shot_extractor.texts == stepwise_extractor.texts
+    assert [node.content for node in one_shot_db.saved_chunk_nodes] == [
+        node.content for node in stepwise_db.saved_chunk_nodes
+    ]
 
-    assert [chunk.metadata["type"] for chunk in chunks] == ["text", "code", "table"]
-    assert chunks[0].content.startswith("# In memory")
-    assert chunks[1].content == "print(2)"
-    assert "source_path" not in chunks[0].metadata
+
+def test_graph_rag_extract_kg_per_chunk_without_progress_preserves_return_shape(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """extract_kg_per_chunk() should keep its existing shape by default."""
+
+    graph_db = FakeGraphDB()
+    rag = GraphRAG(
+        model="test",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=ConcurrencyTrackingExtractor(),
+        retrievers=(StaticRetriever([]),),
+    )
+    chunks = build_chunks("0.01", "0.01", "0.01")
+
+    with caplog.at_level(logging.INFO, logger="grawiki.rag.graph_rag"):
+        chunk_graphs = asyncio.run(rag.extract_kg_per_chunk(chunks))
+
+    assert set(chunk_graphs) == {chunk.id for chunk in chunks}
+    assert all(isinstance(graph, KnowledgeGraph) for graph in chunk_graphs.values())
+    assert "Extracting knowledge graphs for 3 chunks with max_workers=4" in caplog.text
+    assert "Extracted KG for chunk" not in caplog.text
+    assert "Completed KG extraction" not in caplog.text
 
 
-def test_graph_rag_ingest_text_uses_configured_markdown_chunker() -> None:
-    """ingest_text should treat in-memory content as markdown when configured."""
+def test_graph_rag_extract_kg_per_chunk_with_progress_logs_each_completion(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """extract_kg_per_chunk(show_progress=True) should log start, progress, finish."""
+
+    graph_db = FakeGraphDB()
+    rag = GraphRAG(
+        model="test",
+        embedding_model="test-embedding",
+        db=graph_db,
+        max_workers=2,
+        embedding=FakeEmbedder(),
+        kg_extractor=ProgressTrackingExtractor(),
+        retrievers=(StaticRetriever([]),),
+    )
+    chunks = build_chunks("0.03", "0.01", "0.02")
+
+    with caplog.at_level(logging.INFO, logger="grawiki.rag.graph_rag"):
+        chunk_graphs = asyncio.run(rag.extract_kg_per_chunk(chunks, show_progress=True))
+
+    progress_messages = [
+        record.message
+        for record in caplog.records
+        if record.message.startswith("Extracted KG for chunk ")
+    ]
+
+    assert set(chunk_graphs) == {chunk.id for chunk in chunks}
+    assert "Extracting knowledge graphs for 3 chunks with max_workers=2" in caplog.text
+    assert progress_messages == [
+        "Extracted KG for chunk 1/3",
+        "Extracted KG for chunk 2/3",
+        "Extracted KG for chunk 3/3",
+    ]
+    assert "Completed KG extraction for 3 chunks" in caplog.text
+
+
+def test_graph_rag_extract_kg_per_chunk_failure_cancels_remaining_tasks(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Chunk extraction should cancel remaining work and re-raise the failure."""
+
+    graph_db = FakeGraphDB()
+    extractor = CancelTrackingFailingExtractor()
+    rag = GraphRAG(
+        model="test",
+        embedding_model="test-embedding",
+        db=graph_db,
+        max_workers=3,
+        embedding=FakeEmbedder(),
+        kg_extractor=extractor,
+        retrievers=(StaticRetriever([]),),
+    )
+    chunks = build_chunks("slow-1", "fail", "slow-2")
+
+    with caplog.at_level(logging.INFO, logger="grawiki.rag.graph_rag"):
+        with pytest.raises(RuntimeError, match="chunk extraction failed"):
+            asyncio.run(rag.extract_kg_per_chunk(chunks, show_progress=True))
+
+    assert set(extractor.started) == {"slow-1", "fail", "slow-2"}
+    assert sorted(extractor.cancelled) == ["slow-1", "slow-2"]
+    assert "Extracting knowledge graphs for 3 chunks with max_workers=3" in caplog.text
+    assert "Completed KG extraction for 3 chunks" not in caplog.text
+
+
+def test_graph_rag_ingest_passes_show_progress_to_chunk_extraction(
+    tmp_path: Path,
+) -> None:
+    """ingest(show_progress=True) should forward the flag to chunk extraction."""
+
+    input_path = tmp_path / "input.txt"
+    input_path.write_text("Alpha.\nBeta.\n")
 
     graph_db = FakeGraphDB()
     rag = GraphRAG(
@@ -405,7 +667,264 @@ def test_graph_rag_ingest_text_uses_configured_markdown_chunker() -> None:
         embedding=FakeEmbedder(),
         kg_extractor=StaticExtractor(KnowledgeGraph()),
         retrievers=(StaticRetriever([]),),
-        markdown_chunker=MarkdownChunker(tokenizer="character"),
+    )
+    extract_calls: list[bool] = []
+
+    async def fake_extract_kg_per_chunk(
+        chunks: list[Chunk],
+        *,
+        show_progress: bool = False,
+    ) -> dict[str, KnowledgeGraph]:
+        extract_calls.append(show_progress)
+        return {chunk.id: KnowledgeGraph() for chunk in chunks}
+
+    rag.extract_kg_per_chunk = fake_extract_kg_per_chunk  # type: ignore[method-assign]
+
+    asyncio.run(rag.ingest(input_path, show_progress=True))
+
+    assert extract_calls == [True]
+
+
+def test_graph_rag_ingest_text_passes_show_progress_to_chunk_extraction() -> None:
+    """ingest_text(show_progress=True) should forward the flag to chunk extraction."""
+
+    graph_db = FakeGraphDB()
+    rag = GraphRAG(
+        model="test",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(KnowledgeGraph()),
+        retrievers=(StaticRetriever([]),),
+    )
+    extract_calls: list[bool] = []
+
+    async def fake_extract_kg_per_chunk(
+        chunks: list[Chunk],
+        *,
+        show_progress: bool = False,
+    ) -> dict[str, KnowledgeGraph]:
+        extract_calls.append(show_progress)
+        return {chunk.id: KnowledgeGraph() for chunk in chunks}
+
+    rag.extract_kg_per_chunk = fake_extract_kg_per_chunk  # type: ignore[method-assign]
+
+    asyncio.run(
+        rag.ingest_text(
+            "Alpha.\nBeta.\n",
+            title="In-memory text",
+            show_progress=True,
+        )
+    )
+
+    assert extract_calls == [True]
+
+
+@pytest.mark.parametrize("suffix", [".md", ".markdown"])
+def test_read_document_marks_markdown_files(tmp_path: Path, suffix: str) -> None:
+    """read_document() should mark markdown sources at load time."""
+
+    input_path = tmp_path / f"input{suffix}"
+    input_path.write_text("# Heading\n\nMarkdown body.\n")
+
+    document = read_document(input_path)
+
+    assert document.content == "# Heading\n\nMarkdown body.\n"
+    assert document.metadata == {
+        "filepath": str(input_path),
+        "source_format": "markdown",
+        "content_format": "markdown",
+    }
+
+
+def test_read_document_converts_pdf_to_markdown_in_memory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """read_document() should convert PDFs to markdown without sidecar files."""
+
+    input_path = tmp_path / "input.pdf"
+    input_path.write_bytes(b"%PDF-1.4 placeholder")
+    calls: list[Path] = []
+
+    def fake_to_markdown(path: Path) -> str:
+        calls.append(path)
+        return "# PDF\n\nConverted markdown.\n"
+
+    monkeypatch.setattr(
+        document_processing.pymupdf4llm, "to_markdown", fake_to_markdown
+    )
+
+    document = read_document(input_path)
+
+    assert calls == [input_path]
+    assert document.content == "# PDF\n\nConverted markdown.\n"
+    assert document.metadata == {
+        "filepath": str(input_path),
+        "source_format": "pdf",
+        "content_format": "markdown",
+    }
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["input.pdf"]
+
+
+def test_markdown_pipeline_chunker_preserves_order_and_metadata(tmp_path: Path) -> None:
+    """Markdown chunking should preserve prose, code, and table ordering."""
+
+    input_path = tmp_path / "input.md"
+    document = Document(
+        id="doc-1",
+        title="Markdown",
+        content=(
+            "# Heading\n\n"
+            "Alpha beta gamma delta epsilon zeta eta theta.\n\n"
+            "```python\n"
+            "print(1)\n"
+            "print(2)\n"
+            "```\n\n"
+            "| a | b |\n"
+            "| - | - |\n"
+            "| 1 | 2 |\n"
+        ),
+        metadata={"filepath": str(input_path), "content_format": "markdown"},
+    )
+    chunker = MarkdownPipelineChunker(build_markdown_pipeline(chunk_size=30))
+
+    chunks = chunker.chunk(document)
+
+    assert [chunk.metadata["type"] for chunk in chunks] == [
+        "text",
+        "text",
+        "code",
+        "table",
+    ]
+    assert [int(chunk.metadata["start_index"]) for chunk in chunks] == sorted(
+        int(chunk.metadata["start_index"]) for chunk in chunks
+    )
+    assert all(chunk.metadata["source_path"] == str(input_path) for chunk in chunks)
+    assert chunks[0].content.startswith("# Heading")
+    assert chunks[2].content.startswith("print(1)")
+    assert chunks[3].content.startswith("| a | b |")
+
+
+def test_markdown_pipeline_chunker_keeps_large_code_and_tables_intact() -> None:
+    """Structured markdown blocks should stay intact in explicit markdown mode."""
+
+    document = Document(
+        id="doc-1",
+        title="Markdown",
+        content=(
+            "# Heading\n\n"
+            "Intro paragraph.\n\n"
+            "```python\n"
+            "print(1234567890)\n"
+            "print(abcdefghij)\n"
+            "```\n\n"
+            "| a | b |\n"
+            "| - | - |\n"
+            "| 1 | 2 |\n"
+            "| 3 | 4 |\n"
+        ),
+        metadata={"content_format": "markdown"},
+    )
+    chunker = MarkdownPipelineChunker(build_markdown_pipeline(chunk_size=25))
+
+    chunks = chunker.chunk(document)
+
+    code_chunks = [chunk for chunk in chunks if chunk.metadata["type"] == "code"]
+    table_chunks = [chunk for chunk in chunks if chunk.metadata["type"] == "table"]
+
+    assert len(code_chunks) == 1
+    assert len(table_chunks) == 1
+    assert len(code_chunks[0].content) > 25
+    assert len(table_chunks[0].content) > 25
+
+
+def test_markdown_pipeline_chunker_accepts_non_markdown_pipeline() -> None:
+    """MarkdownPipelineChunker should also normalize plain pipeline output."""
+
+    document = Document(
+        id="doc-1",
+        title="Markdown-ish",
+        content="# Heading\n\n```python\nprint(1)\n```\n",
+        metadata={"content_format": "markdown"},
+    )
+    chunker = MarkdownPipelineChunker(
+        Pipeline()
+        .process_with("text")
+        .chunk_with("token", tokenizer="character", chunk_size=12)
+    )
+
+    chunks = chunker.chunk(document)
+
+    assert len(chunks) >= 2
+    assert all("type" not in chunk.metadata for chunk in chunks)
+    assert [int(chunk.metadata["start_index"]) for chunk in chunks] == sorted(
+        int(chunk.metadata["start_index"]) for chunk in chunks
+    )
+
+
+def test_graph_rag_ingest_text_with_text_format_uses_plain_chunker() -> None:
+    """ingest_text(format='text') should stay on the generic text chunker."""
+
+    graph_db = FakeGraphDB()
+    rag = GraphRAG(
+        model="test",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(KnowledgeGraph()),
+        retrievers=(StaticRetriever([]),),
+        markdown_pipeline=build_markdown_pipeline(),
+    )
+
+    asyncio.run(
+        rag.ingest_text(
+            "# Markdown-ish text\n\n```python\nprint(3)\n```\n",
+            title="Plain text",
+            format="text",
+        )
+    )
+
+    assert all("type" not in node.metadata for node in graph_db.saved_chunk_nodes)
+    assert graph_db.saved_doc_nodes[0].metadata["content_format"] == "text"
+
+
+def test_graph_rag_chunk_document_falls_back_to_plain_chunker_for_markdown() -> None:
+    """Markdown should use the generic chunker unless a pipeline is configured."""
+
+    rag = GraphRAG(
+        model="test",
+        embedding_model="test-embedding",
+        db=FakeGraphDB(),
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(KnowledgeGraph()),
+        retrievers=(StaticRetriever([]),),
+    )
+    document = Document(
+        id="doc-1",
+        title="Markdown fallback",
+        content="# Heading\n\nText.\n\n```python\nprint(3)\n```\n",
+        metadata={"content_format": "markdown"},
+    )
+
+    chunks = rag.chunk_document(document)
+
+    assert chunks
+    assert all("type" not in chunk.metadata for chunk in chunks)
+    assert any("```python" in chunk.content for chunk in chunks)
+
+
+def test_graph_rag_ingest_text_with_markdown_format_uses_markdown_pipeline() -> None:
+    """ingest_text(format='markdown') should use the markdown pipeline."""
+
+    graph_db = FakeGraphDB()
+    rag = GraphRAG(
+        model="test",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(KnowledgeGraph()),
+        retrievers=(StaticRetriever([]),),
+        markdown_pipeline=build_markdown_pipeline(),
     )
 
     asyncio.run(
@@ -419,6 +938,7 @@ def test_graph_rag_ingest_text_uses_configured_markdown_chunker() -> None:
             "| - | - |\n"
             "| a | b |\n",
             title="Markdown text",
+            format="markdown",
         )
     )
 
@@ -428,7 +948,106 @@ def test_graph_rag_ingest_text_uses_configured_markdown_chunker() -> None:
         "table",
     ]
     assert graph_db.saved_doc_nodes[0].embedding == []
+    assert graph_db.saved_doc_nodes[0].metadata["content_format"] == "markdown"
     assert graph_db.setup_calls[1] == {"__chunk__": 3}
+
+
+def test_graph_rag_ingest_and_ingest_text_share_markdown_ingestion_behavior(
+    tmp_path: Path,
+) -> None:
+    """File and in-memory markdown ingestion should share the same core flow."""
+
+    markdown = (
+        "# Shared markdown\n\n"
+        "Text.\n\n"
+        "```python\n"
+        "print(4)\n"
+        "```\n\n"
+        "| k | v |\n"
+        "| - | - |\n"
+        "| a | b |\n"
+    )
+    input_path = tmp_path / "shared.md"
+    input_path.write_text(markdown)
+
+    file_db = FakeGraphDB()
+    file_rag = GraphRAG(
+        model="test",
+        embedding_model="test-embedding",
+        db=file_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(KnowledgeGraph()),
+        retrievers=(StaticRetriever([]),),
+        markdown_pipeline=build_markdown_pipeline(),
+    )
+    text_db = FakeGraphDB()
+    text_rag = GraphRAG(
+        model="test",
+        embedding_model="test-embedding",
+        db=text_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(KnowledgeGraph()),
+        retrievers=(StaticRetriever([]),),
+        markdown_pipeline=build_markdown_pipeline(),
+    )
+
+    asyncio.run(file_rag.ingest(input_path))
+    asyncio.run(text_rag.ingest_text(markdown, title="shared", format="markdown"))
+
+    assert file_db.setup_calls == text_db.setup_calls
+    assert [node.content for node in file_db.saved_chunk_nodes] == [
+        node.content for node in text_db.saved_chunk_nodes
+    ]
+    assert [node.metadata["type"] for node in file_db.saved_chunk_nodes] == [
+        node.metadata["type"] for node in text_db.saved_chunk_nodes
+    ]
+    assert len(file_db.saved_entities) == len(text_db.saved_entities) == 1
+
+
+def test_graph_rag_ingest_routes_pdf_markdown_through_markdown_pipeline(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Markdown converted from PDF should flow through markdown chunking."""
+
+    input_path = tmp_path / "input.pdf"
+    input_path.write_bytes(b"%PDF-1.4 placeholder")
+
+    monkeypatch.setattr(
+        document_processing.pymupdf4llm,
+        "to_markdown",
+        lambda path: (
+            "# PDF markdown\n\n"
+            "Text.\n\n"
+            "```python\n"
+            "print(5)\n"
+            "```\n\n"
+            "| a | b |\n"
+            "| - | - |\n"
+            "| 1 | 2 |\n"
+        ),
+    )
+
+    graph_db = FakeGraphDB()
+    rag = GraphRAG(
+        model="test",
+        embedding_model="test-embedding",
+        db=graph_db,
+        embedding=FakeEmbedder(),
+        kg_extractor=StaticExtractor(KnowledgeGraph()),
+        retrievers=(StaticRetriever([]),),
+        markdown_pipeline=build_markdown_pipeline(),
+    )
+
+    asyncio.run(rag.ingest(input_path))
+
+    assert graph_db.saved_doc_nodes[0].metadata["source_format"] == "pdf"
+    assert graph_db.saved_doc_nodes[0].metadata["content_format"] == "markdown"
+    assert [node.metadata["type"] for node in graph_db.saved_chunk_nodes] == [
+        "text",
+        "code",
+        "table",
+    ]
 
 
 def test_graph_rag_search_uses_configured_retrievers() -> None:

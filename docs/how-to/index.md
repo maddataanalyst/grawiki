@@ -6,5 +6,6 @@ This section contains task-oriented guides derived from the maintained notebooks
 - [Deduplicate entities](deduplicate-entities.md)
 - [Store and recall memory](store-and-recall-memory.md)
 - [Visualize a graph](visualize-a-graph.md)
+- [Tips & Tricks](tips-and-tricks.md)
 
 For the full API surface, see [API Overview](../api/index.md). For the high-level system flows, see [Flows](../flows.md).
